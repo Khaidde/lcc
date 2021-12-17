@@ -3,6 +3,10 @@
 
 namespace lcc {
 
+extern bool printUseColor;
+
+[[noreturn]] void unreachable();
+
 [[noreturn]] void panic(const char *format, ...);
 
 void err(const char *format, ...);

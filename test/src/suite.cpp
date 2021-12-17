@@ -2,7 +2,4 @@
 
 using namespace lcc;
 
-int main() {
-    compile("test.cpp");
-    ;
-}
+int main() { compile("test.cpp"); }

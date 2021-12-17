@@ -1,10 +1,13 @@
 #include "print.hpp"
 
-#include <string.h>
-
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <exception>
+
+namespace lcc {
+
+bool printUseColor = true;
 
 namespace {
 
@@ -15,18 +18,22 @@ constexpr const char *kAnsiColorReset = "\x1b[0m";
 
 // TODO: edge cases where dest is too small to hold entire concatenation
 void strcat_color(char *dest, const char *src, const char *col) {
-    while (*col) {
-        *(dest++) = *col;
-        col++;
+    if (printUseColor) {
+        while (*col) {
+            *(dest++) = *col;
+            col++;
+        }
     }
     while (*src) {
         *(dest++) = *src;
         src++;
     }
-    const char *colReset = kAnsiColorReset;
-    while (*colReset) {
-        *(dest++) = *colReset;
-        colReset++;
+    if (printUseColor) {
+        const char *colReset = kAnsiColorReset;
+        while (*colReset) {
+            *(dest++) = *colReset;
+            colReset++;
+        }
     }
     *dest = '\0';
 }
@@ -46,16 +53,22 @@ void strcat_color(char *dest, const char *src, const char *col) {
         va_end(ap);                                          \
     } while (0)
 
-;
+void unreachable() {
+    char buffer[20] = "  lcc: ";
+    size_t headerLen = strlen(buffer);
+    strcat_color(buffer + headerLen, "unreachable ", kAnsiColorRed);
+    fprintf(stderr, buffer);
+    throw std::exception();
+}
 
-void lcc::panic(const char *format, ...) {
+void panic(const char *format, ...) {
     DEFINE_PRINT(stderr, panic, kAnsiColorRed);
     throw std::exception();
 }
 
-void lcc::err(const char *format, ...) { DEFINE_PRINT(stderr, err, kAnsiColorRed); }
+void err(const char *format, ...) { DEFINE_PRINT(stderr, err, kAnsiColorRed); }
 
-void lcc::todo(const char *format, ...) {
+void todo(const char *format, ...) {
 #ifndef NDEBUG
     DEFINE_PRINT(stderr, TODO, kAnsiColorYellow);
 #else
@@ -64,7 +77,7 @@ void lcc::todo(const char *format, ...) {
 #endif
 }
 
-void lcc::debug(const char *format, ...) {
+void debug(const char *format, ...) {
 #ifndef NDEBUG
     DEFINE_PRINT(stdout, debug, kAnsiColorCyan);
 #else
@@ -73,4 +86,8 @@ void lcc::debug(const char *format, ...) {
 #endif
 }
 
-void lcc::info(const char *format, ...) { DEFINE_PRINT(stdout, info, kAnsiColorReset); }
+void info(const char *format, ...) { DEFINE_PRINT(stdout, info, kAnsiColorReset); }
+
+#undef DEFINE_PRINT
+
+}  // namespace lcc

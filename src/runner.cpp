@@ -1,22 +1,24 @@
-#include <stdio.h>
-#include <stdlib.h>
-
+#include <cstdio>
 #include <exception>
+#include <string>
 
 #include "lcc.hpp"
+#include "list.hpp"
+#include "lstring.hpp"
 #include "util.hpp"
 
-int main(int argc, char** argv) {
+using namespace lcc;
+
+int main(int argc, char **argv) {
     try {
-        if (lcc::command_line(argc, argv) == lcc::ErrCode::kFailure) {
+        if (command_line(argc, argv) == ErrCode::kFailure) {
             fprintf(stderr, "  Failed to compile\n");
             return EXIT_FAILURE;
         }
-
         printf("  Compilation done\n");
 
         return EXIT_SUCCESS;
-    } catch (const std::exception&) {
+    } catch (const std::exception &) {
         return EXIT_FAILURE;
     }
 }

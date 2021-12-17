@@ -3,6 +3,10 @@
 
 #include <cstdint>
 
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+static_assert(0 && "Big endian compilation not supported");
+#endif
+
 namespace lcc {
 
 using u64 = uint64_t;
@@ -10,14 +14,7 @@ using u32 = uint32_t;
 using u16 = uint16_t;
 using u8 = uint8_t;
 
-namespace file {
-
-static inline char *read_file(const char *path) {
-    (void)path;
-    return nullptr;
-}
-
-};  // namespace file
+using s32 = int32_t;
 
 }  // namespace lcc
 

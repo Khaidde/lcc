@@ -4,15 +4,15 @@
 #include <cassert>
 
 #include "mem.hpp"
-#include "print.hpp"
 
 namespace lcc {
 
 template <typename T>
 struct LList {
     void init(size_t initialSize) {
+        assert(initialSize && "Initial size of list must be positive");
         data = mem::malloc<T>(sizeof(T) * initialSize);
-        size = initialSize;
+        size = 0;
         capacity = initialSize;
     }
 
@@ -23,13 +23,20 @@ struct LList {
         }
     }
 
+    void resize() {
+        size_t oldCapacity = capacity;
+        capacity = (capacity << 1) - (capacity >> 1) + 8;
+        data = mem::realloc<T>(data, oldCapacity * sizeof(T), capacity * sizeof(T));
+    }
+
     void ensure_capacity(size_t newCapacity) {
         if (capacity < newCapacity) {
+            size_t oldCapacity = capacity;
             while (capacity < newCapacity) {
-                // capacity = capcity * 1.5 + 1
-                capacity += (capacity << 1) - (capacity >> 1) + 1;
+                // capacity = capcity * 1.5 + 8
+                capacity = (capacity << 1) - (capacity >> 1) + 8;
             }
-            data = mem::realloc(data, capacity);
+            data = mem::realloc<T>(data, oldCapacity * sizeof(T), capacity * sizeof(T));
         }
     }
 
@@ -47,27 +54,6 @@ struct LList {
     size_t capacity{0};
     size_t size{0};
 };
-
-using LString = LList<char>;
-
-struct LStrView {
-    const char *string;
-    size_t len;
-};
-
-static inline LString str_init(const char *str) {
-    LString lStr;
-
-    const char *orig = str;
-    while (*str) str++;
-    lStr.init((size_t)(str - orig) + 1);
-
-    char *in = lStr.data;
-    while (*orig) *(in++) = *(orig++);
-    *in = '\0';
-
-    return lStr;
-}
 
 }  // namespace lcc
 

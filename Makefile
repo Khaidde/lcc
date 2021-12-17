@@ -37,8 +37,14 @@ ${OBJ_DIR}/%.o: ${SRC_DIR}/%.cpp
 				@mkdir -p ${dir $@}
 				${CC} ${C_FLAGS} -c $< -MMD -MF $(@:.o=.d) -o $@
 
-test: build test/src/suite.cpp
-				${EXEC}
+test-alloc: ${OBJ_DIR}/test_alloc.o ${OBJ_DIR}/mem.o ${OBJ_DIR}/print.o
+				@mkdir -p ${dir $@}
+				${CC} ${C_FLAGS} $^ -o ${BIN_DIR}/test_alloc.exe
+			  ./${BIN_DIR}/test_alloc.exe
+
+${OBJ_DIR}/test_alloc.o: test/src/test_alloc.cpp
+				@mkdir -p ${dir $@}
+				${CC} ${C_FLAGS} -c $< -MMD -MF $(@:.o=.d) -o $@
 
 clean:
-				rm -f ${OBJ_DIR}/*
+				rm -f ${BIN_DIR}/* ${OBJ_DIR}/*

@@ -10,7 +10,7 @@ enum class ErrCode : unsigned char {
 
 ErrCode command_line(int argc, char** argv);
 
-void compile(const char* path);
+ErrCode compile(const char* path);
 
 }  // namespace lcc
 
