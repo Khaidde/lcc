@@ -7,13 +7,6 @@
 namespace lcc {
 
 enum class TokenType {
-    kLParen,
-    kRParen,
-    kLCurl,
-    kRCurl,
-    kAssign,
-    kIf,
-    kVoid,
     kAdd,
     kAddAdd,
     kAddEq,
@@ -24,6 +17,21 @@ enum class TokenType {
     kBitAndEq,
     kIntLiteral,
     kIdent,
+    kPtr,
+    kDeref,
+    kLParen,
+    kRParen,
+    kLCurl,
+    kRCurl,
+    kAssign,
+    kColon,
+    kComma,
+    kArrow,
+    kRetArrow,
+    kIf,
+    kWhile,
+    kRet,
+    kEof,
     kErr,
 };
 
@@ -31,6 +39,7 @@ const char *token_type_string(TokenType type);
 
 struct Token {
     TokenType type;
+    size_t line;
     size_t startI;
     size_t len;
 
@@ -45,15 +54,17 @@ struct Token {
 struct Lexer {
     LString *src;
 
-    size_t curI{0};
-    size_t curLen{0};
-    Token *peekToken{nullptr};
+    size_t line;
+    size_t curI;
+    size_t curLen;
+    Token curToken;
 };
 
 Lexer *lexer_init(LString *src);
-bool is_eof(Lexer *lex);
-Token *lex_eat(Lexer *lex);
-Token *lex_peek(Lexer *lex);
+bool is_eof(Lexer *l);
+bool is_whitespace(char c);
+Token *lex_next(Lexer *l);
+Token *lex_peek(Lexer *l);
 
 }  // namespace lcc
 

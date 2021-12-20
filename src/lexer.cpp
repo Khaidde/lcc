@@ -2,7 +2,7 @@
 
 #include <cstdarg>
 
-#include "print.hpp"
+#include "diagnostics.hpp"
 
 namespace lcc {
 
@@ -14,30 +14,34 @@ void end_token(Lexer *l) {
 }
 
 Token *create_token(Lexer *l, TokenType type) {
-    Token *token = mem::malloc<Token>();
-    token->type = type;
-    token->startI = l->curI;
-    token->len = l->curLen;
+    l->curToken.type = type;
+    l->curToken.line = l->line;
+    l->curToken.startI = l->curI;
+    l->curToken.len = l->curLen;
     end_token(l);
-    return token;
+    return &l->curToken;
 }
 
 Token *create_ident_token(Lexer *l) {
-    Token *token = mem::malloc<Token>();
-    token->type = TokenType::kIdent;
-    token->data.ident = lstr_view(l->src->data, l->curI, l->curLen);
-    token->startI = l->curI;
-    token->len = l->curLen;
+    l->curToken.type = TokenType::kIdent;
+    l->curToken.data.ident = lstr_view(l->src->data, l->curI, l->curLen);
+    l->curToken.startI = l->curI;
+    l->curToken.len = l->curLen;
     end_token(l);
-    return token;
+    return &l->curToken;
 }
 
-Token *err_token(size_t startI, size_t len) {
-    Token *err = mem::malloc<Token>();
-    err->type = TokenType::kErr;
-    err->startI = startI;
-    err->len = len;
-    return err;
+Token *create_eof_token(Lexer *l) {
+    l->curToken.type = TokenType::kEof;
+    l->curToken.line = l->line;
+    l->curToken.startI = l->curI;
+    l->curToken.len = 1;
+    return &l->curToken;
+}
+
+Token *ret_err(Lexer *l) {
+    l->curToken.type = TokenType::kErr;
+    return &l->curToken;
 }
 
 char peek_char(Lexer *l) {
@@ -50,8 +54,6 @@ char peek_peek_char(Lexer *l) {
     return l->src->get(l->curI + l->curLen + 1);
 }
 
-bool is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
-
 void lex_single_line_comment(Lexer *l) {
     while (char c = peek_char(l)) {
         if (c == '\n') break;
@@ -62,6 +64,7 @@ void lex_single_line_comment(Lexer *l) {
 
 Token *lex_multi_line_comment(Lexer *l) {
     while (char c0 = peek_char(l)) {
+        if (c0 == '\n') l->line++;
         l->curLen++;
         char c1 = peek_char(l);
         if (c0 == '*' && c1 == '/') {
@@ -76,8 +79,8 @@ Token *lex_multi_line_comment(Lexer *l) {
             }
         }
     }
-    err("Could not find matching */ for multiline comment\n");
-    return err_token(l->curI + l->curLen, 1);
+    dx_err(l, at_eof(l), "Could not find matching */ for multiline comment\n");
+    return ret_err(l);
 }
 
 bool is_letter(char c) { return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z'); }
@@ -104,7 +107,8 @@ struct Keyword {
 };
 constexpr Keyword kKeywords[]{
     {"if", TokenType::kIf},
-    {"void", TokenType::kVoid},
+    {"ret", TokenType::kRet},
+    {"while", TokenType::kWhile},
 };
 constexpr size_t kNumKeywords = sizeof(kKeywords) / sizeof(Keyword);
 
@@ -135,8 +139,8 @@ Token *lex_keyword_or_ident(Lexer *l) {
 }
 
 Token *create_overflow_token(Lexer *l) {
-    err("Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(*l->src, l->curI, l->curLen));
-    return err_token(l->curI, l->curLen);
+    dx_err(l, curr(l), "Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(*l->src, l->curI, l->curLen));
+    return ret_err(l);
 }
 
 Token *lex_create_int_literal(Lexer *l, bool pos, u32 val) {
@@ -147,9 +151,10 @@ Token *lex_create_int_literal(Lexer *l, bool pos, u32 val) {
 
 Token *lex_binary(Lexer *l, bool pos) {
     if (!is_bindigit(peek_char(l))) {
+        char digit = peek_char(l);
         l->curLen++;
-        err("Invalid binary digit: %s\n", lstr_raw_view(*l->src, l->curI, l->curLen));
-        return err_token(l->curI, l->curLen);
+        dx_err(l, curr(l), "Invalid binary digit: %c\n", digit);
+        return ret_err(l);
     }
     u32 val = 0;
     while (char c = peek_char(l)) {
@@ -165,9 +170,10 @@ Token *lex_binary(Lexer *l, bool pos) {
 
 Token *lex_hexadecimal(Lexer *l, bool pos) {
     if (!is_hexdigit(peek_char(l))) {
+        char digit = peek_char(l);
         l->curLen++;
-        err("Invalid hexadecimal digit: %s\n", lstr_raw_view(*l->src, l->curI, l->curLen));
-        return err_token(l->curI, l->curLen);
+        dx_err(l, curr(l), "Invalid hexadecimal digit: %c\n", digit);
+        return ret_err(l);
     }
     u32 val = 0;
     while (char c = peek_char(l)) {
@@ -220,13 +226,6 @@ Token *lex_integer(Lexer *l) {
 
 const char *token_type_string(TokenType type) {
     switch (type) {
-        case TokenType::kLParen: return "(";
-        case TokenType::kRParen: return ")";
-        case TokenType::kLCurl: return "{";
-        case TokenType::kRCurl: return "}";
-        case TokenType::kAssign: return "=";
-        case TokenType::kIf: return "if";
-        case TokenType::kVoid: return "void";
         case TokenType::kAdd: return "+";
         case TokenType::kAddAdd: return "++";
         case TokenType::kAddEq: return "+=";
@@ -236,7 +235,22 @@ const char *token_type_string(TokenType type) {
         case TokenType::kBitAnd: return "&";
         case TokenType::kBitAndEq: return "&=";
         case TokenType::kIntLiteral: return "'integer'";
-        case TokenType::kIdent: return "'ident'";
+        case TokenType::kIdent: return "'identifier'";
+        case TokenType::kPtr: return "*";
+        case TokenType::kDeref: return "@";
+        case TokenType::kLParen: return "(";
+        case TokenType::kRParen: return ")";
+        case TokenType::kLCurl: return "{";
+        case TokenType::kRCurl: return "}";
+        case TokenType::kAssign: return "=";
+        case TokenType::kColon: return ":";
+        case TokenType::kComma: return ",";
+        case TokenType::kArrow: return "->";
+        case TokenType::kRetArrow: return "=>";
+        case TokenType::kIf: return "if";
+        case TokenType::kWhile: return "while";
+        case TokenType::kRet: return "ret";
+        case TokenType::kEof: return "'eof'";
         case TokenType::kErr: return "'error'";
     }
 }
@@ -244,19 +258,22 @@ const char *token_type_string(TokenType type) {
 Lexer *lexer_init(LString *src) {
     Lexer *lex = mem::malloc<Lexer>();
     lex->src = src;
+    lex->line = 1;
+    lex->curI = 0;
+    lex->curLen = 0;
+    lex_next(lex);
     return lex;
 }
 
+bool is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+
 bool is_eof(Lexer *lex) { return lex->curI + lex->curLen >= lex->src->size; }
 
-Token *lex_eat(Lexer *l) {
-    if (l->peekToken) {
-        Token *rv = l->peekToken;
-        l->peekToken = nullptr;
-        return rv;
+Token *lex_next(Lexer *l) {
+    while (is_whitespace(peek_char(l))) {
+        if (peek_char(l) == '\n') l->line++;
+        l->curI++;
     }
-
-    while (is_whitespace(peek_char(l))) l->curI++;
 
     switch (char c = peek_char(l)) {
         case '/':
@@ -265,22 +282,17 @@ Token *lex_eat(Lexer *l) {
                 case '/':
                     l->curLen++;
                     lex_single_line_comment(l);
-                    return lex_eat(l);
+                    return lex_next(l);
                 case '*':
                     l->curLen++;
                     if (Token *rv = lex_multi_line_comment(l)) return rv;
-                    return lex_eat(l);
-                default: todo("Division not yet supported\n"); return nullptr;
+                    return lex_next(l);
+                default: dx_err(l, curr(l), "Division not yet supported\n"); return ret_err(l);
             }
-        case '(': l->curLen++; return create_token(l, TokenType::kLParen);
-        case ')': l->curLen++; return create_token(l, TokenType::kRParen);
-        case '{': l->curLen++; return create_token(l, TokenType::kLCurl);
-        case '}': l->curLen++; return create_token(l, TokenType::kRCurl);
-        case '=': l->curLen++; return create_token(l, TokenType::kAssign);
         case '+':
             if (is_number(peek_peek_char(l))) return lex_integer(l);
             l->curLen++;
-            switch (char c = peek_char(l)) {
+            switch (peek_char(l)) {
                 case '+': l->curLen++; return create_token(l, TokenType::kAddAdd);
                 case '=': l->curLen++; return create_token(l, TokenType::kAddEq);
                 default: return create_token(l, TokenType::kAdd);
@@ -288,9 +300,10 @@ Token *lex_eat(Lexer *l) {
         case '-':
             if (is_number(peek_peek_char(l))) return lex_integer(l);
             l->curLen++;
-            switch (char c = peek_char(l)) {
+            switch (peek_char(l)) {
                 case '-': l->curLen++; return create_token(l, TokenType::kSubSub);
                 case '=': l->curLen++; return create_token(l, TokenType::kSubEq);
+                case '>': l->curLen++; return create_token(l, TokenType::kArrow);
                 default: return create_token(l, TokenType::kSubNeg);
             }
         case '&':
@@ -302,21 +315,32 @@ Token *lex_eat(Lexer *l) {
                 return create_token(l, TokenType::kBitAnd);
             }
             break;
-        case 0: return nullptr;
+        case '*': l->curLen++; return create_token(l, TokenType::kPtr);
+        case '@': l->curLen++; return create_token(l, TokenType::kDeref);
+        case '(': l->curLen++; return create_token(l, TokenType::kLParen);
+        case ')': l->curLen++; return create_token(l, TokenType::kRParen);
+        case '{': l->curLen++; return create_token(l, TokenType::kLCurl);
+        case '}': l->curLen++; return create_token(l, TokenType::kRCurl);
+        case '=':
+            l->curLen++;
+            if (peek_char(l) == '>') {
+                l->curLen++;
+                return create_token(l, TokenType::kRetArrow);
+            } else {
+                return create_token(l, TokenType::kAssign);
+            }
+        case ':': l->curLen++; return create_token(l, TokenType::kColon);
+        case ',': l->curLen++; return create_token(l, TokenType::kComma);
+        case 0: return create_eof_token(l);
         default:
             if (is_letter_or_underscore(c)) return lex_keyword_or_ident(l);
             if (is_number(c)) return lex_integer(l);
 
-            err("Unexpected character: '%c'\n", c);
-            return err_token(l->curI, 1);
+            dx_err(l, curr(l), "Unexpected character[%d]: '%c'\n", l->line, c);
+            return ret_err(l);
     }
 }
 
-Token *lex_peek(Lexer *l) {
-    if (!l->peekToken) {
-        l->peekToken = lex_eat(l);
-    }
-    return l->peekToken;
-}
+Token *lex_peek(Lexer *l) { return &l->curToken; }
 
 }  // namespace lcc

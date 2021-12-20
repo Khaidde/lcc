@@ -1,7 +1,6 @@
 #include "print.hpp"
 
 #include <cstdarg>
-#include <cstdio>
 #include <cstring>
 #include <exception>
 
@@ -9,12 +8,15 @@ namespace lcc {
 
 bool printUseColor = true;
 
-namespace {
+void print_color(const char *color) {
+    if (printUseColor) printf("%s", color);
+}
 
-constexpr const char *kAnsiColorRed = "\x1b[31m";
-constexpr const char *kAnsiColorYellow = "\x1b[33m";
-constexpr const char *kAnsiColorCyan = "\x1b[36m";
-constexpr const char *kAnsiColorReset = "\x1b[0m";
+void reset_print_color() {
+    if (printUseColor) printf("%s", kAnsiColorReset);
+}
+
+namespace {
 
 // TODO: edge cases where dest is too small to hold entire concatenation
 void strcat_color(char *dest, const char *src, const char *col) {
@@ -40,17 +42,17 @@ void strcat_color(char *dest, const char *src, const char *col) {
 
 }  // namespace
 
-#define DEFINE_PRINT(stream, name, color)                    \
-    do {                                                     \
-        va_list ap;                                          \
-        va_start(ap, format);                                \
-        char buffer[100] = "  lcc: ";                        \
-        size_t headerLen = strlen(buffer);                   \
-        strcat_color(buffer + headerLen, #name ": ", color); \
-        size_t messageLen = strlen(buffer);                  \
-        vsprintf(buffer + messageLen, format, ap);           \
-        fprintf(stream, buffer);                             \
-        va_end(ap);                                          \
+#define DEFINE_PRINT(stream, name, color)                     \
+    do {                                                      \
+        va_list ap;                                           \
+        va_start(ap, format);                                 \
+        char buffer[100];                                     \
+        memcpy(buffer, header, kHeaderLen);                   \
+        strcat_color(buffer + kHeaderLen, #name ": ", color); \
+        size_t messageLen = strlen(buffer);                   \
+        vsprintf(buffer + messageLen, format, ap);            \
+        fprintf(stream, buffer);                              \
+        va_end(ap);                                           \
     } while (0)
 
 void unreachable() {

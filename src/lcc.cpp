@@ -2,10 +2,12 @@
 
 #include <cstring>
 
+#include "diagnostics.hpp"
 #include "file.hpp"
 #include "lexer.hpp"
 #include "list.hpp"
 #include "lstring.hpp"
+#include "parse.hpp"
 #include "print.hpp"
 #include "util.hpp"
 
@@ -49,6 +51,29 @@ ErrCode set_no_color(FlagParserInfo &) {
     return ErrCode::kSuccess;
 }
 
+ErrCode set_num_context_lines(FlagParserInfo &finfo) {
+    if (++finfo.ndx == finfo.argc) {
+        err("-num-context-lines must be followed by a number\n");
+        return ErrCode::kFailure;
+    }
+    const char *num = finfo.argv[finfo.ndx];
+    u16 val = 0;
+    while (*num) {
+        if (*num < '0' || *num > '9') {
+            err("%s expected to be a positive number\n", finfo.argv[finfo.ndx]);
+            return ErrCode::kFailure;
+        }
+        val = val * 10 + *num - '0';
+        if (val > 0xFF) {
+            err("%s exceeds maximum number of context lines displayable\n", finfo.argv[finfo.ndx]);
+            return ErrCode::kFailure;
+        }
+        num++;
+    }
+    numContextLines = val;
+    return ErrCode::kSuccess;
+}
+
 ErrCode no_op(FlagParserInfo &) { return ErrCode::kSuccess; }
 
 constexpr Flag kPrimaryFlags[]{
@@ -59,6 +84,7 @@ constexpr size_t kNumPrimaryFlags = sizeof(kPrimaryFlags) / sizeof(Flag);
 constexpr Flag kSecondaryFlags[]{
     {"-o", set_output_file},
     {"-no-color", no_op},
+    {"-num-context-lines", set_num_context_lines},
 };
 constexpr size_t kNumSecondaryFlags = sizeof(kSecondaryFlags) / sizeof(Flag);
 
@@ -137,19 +163,15 @@ ErrCode compile(const char *path) {
         return ErrCode::kFailure;
     }
 
-    debug("Compiling %s...\n", path);
+    info("Compiling %s...\n", path);
 
     Lexer *lexer = lexer_init(&output);
-    while (Token *token = lex_eat(lexer)) {
-        if (token->type == TokenType::kErr) break;
-        switch (token->type) {
-            case TokenType::kIntLiteral: info("val: %04x(%hi)\n", token->data.intVal, token->data.intVal); break;
-            case TokenType::kIdent: info("str: %s\n", lstr_create(token->data.ident).data); break;
-            default: info("%s\n", token_type_string(token->type));
-        }
+    if (Node *unit = parse(lexer)) {
+        print_ast(unit);
+        return ErrCode::kSuccess;
+    } else {
+        return ErrCode::kFailure;
     }
-
-    return ErrCode::kSuccess;
 }
 
 }  // namespace lcc

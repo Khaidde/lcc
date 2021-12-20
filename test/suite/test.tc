@@ -1,0 +1,45 @@
+main = :(argc: u32, argv: u8) -> u32 {
+    a = 3
+    b = 2
+
+    ptr: *int = *a
+    deref: int = @a
+
+    // val: *(u32, u32) -> u32 = :(a: u32, b: u32) => a + b
+
+    /*
+    add = :(a: u32, c: u32) -> u32 {
+        // other = :() -> () -> u32 => :() -> u32 => b
+        ret a + c
+        // ret a + c + other()()
+    }
+    add = :(a: u32, c: u32) > u32 {
+        other = :() -> () -> u32 {
+            ret :() -> u32 {
+                ret b
+            }
+        }
+        ret a + c + other()()
+    }
+    add = :(a: u32, c: u32, b: u32) -> u32 {
+        other = :(b: u32) -> (b: u32) -> u32 {
+            ret :(b: u32) -> u32 {
+                ret b
+            }
+        }
+        ret a + c + other()()
+    }
+    */
+
+    // val = add(23, 2)
+}
+
+/*
+explicit_main : *(u32, u8) -> u32 = :(argc : u32, argc2 : u8) -> u32 {
+    ret 23
+}
+*/
+
+other = :(a : u32, b : u32) {
+    // "void" return type
+}
