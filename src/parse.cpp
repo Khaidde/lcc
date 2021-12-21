@@ -19,7 +19,7 @@ void align_node_start(Node *node, size_t startI) { node->startI = startI; }
 
 void end_node(Lexer *l, Node *node) { node->endI = lex_peek(l)->startI - 1; }
 
-Node *parse_decl_from_ident(Lexer *l, Token &ident);
+Node *parse_decl_from_lval(Lexer *l, Node *lval);
 
 Node *parse_type(Lexer *l);
 
@@ -32,40 +32,52 @@ Node *parse_expr(Lexer *l);
 Node *parse_block(Lexer *l);
 
 Node *parse_decl_or_expr(Lexer *l) {
-    assert(check_peek(l, TokenType::kIdent));
-    Token ident = *lex_peek(l);
-    lex_next(l);  // next 'ident'
+    Node *expr = parse_expr(l);
+    if (!expr) return nullptr;
 
     if (check_peek(l, TokenType::kColon) || check_peek(l, TokenType::kAssign)) {
-        return parse_decl_from_ident(l, ident);
-    } else {
-        Node *name = create_node(l, NodeType::kName);
-        align_node_start(name, ident.startI);
-        name->data.name.ident = ident.data.ident;
-        end_node(l, name);
-        return parse_infix(l, kLowPrecedence, name);
+        return parse_decl_from_lval(l, expr);
     }
+    return expr;
 }
 
-Node *parse_decl_from_ident(Lexer *l, Token &ident) {
+Node *parse_decl_from_lval(Lexer *l, Node *lval) {
+    switch (lval->type) {
+        case NodeType::kName: break;
+        case NodeType::kPrefix:
+            if (lval->data.prefix.op == TokenType::kDeref) break;
+            dx_err(l, at_node(l, lval), "%s prefix expression not allowed as lvalue\n",
+                   token_type_string(lval->data.prefix.op));
+            return nullptr;
+        default:
+            dx_err(l, at_node(l, lval), "%s expression not allowed as lvalue\n", node_type_string(lval->type));
+            return nullptr;
+    }
+
     Node *decl = create_node(l, NodeType::kDecl);
-    align_node_start(decl, ident.startI);
-    decl->data.decl.name = ident.data.ident;
+    align_node_start(decl, lval->startI);
+    decl->data.decl.lval = lval;
+    decl->data.decl.isDecl = false;
 
     bool hasType = check_peek(l, TokenType::kColon);
     if (hasType) {
+        decl->data.decl.isDecl = true;
         lex_next(l);  // next :
-        decl->data.decl.type = parse_type(l);
-        if (!decl->data.decl.type) return nullptr;
+        decl->data.decl.ty = parse_type(l);
+        if (!decl->data.decl.ty) return nullptr;
+    } else {
+        decl->data.decl.ty = nullptr;
     }
     bool hasAssignment = check_peek(l, TokenType::kAssign);
     if (hasAssignment) {
         lex_next(l);  // next =
-        decl->data.decl.value = parse_expr(l);
-        if (!decl->data.decl.value) return nullptr;
+        decl->data.decl.rval = parse_expr(l);
+        if (!decl->data.decl.rval) return nullptr;
+    } else {
+        decl->data.decl.rval = nullptr;
     }
     if (!hasType && !hasAssignment) {
-        dx_err(l, at_token(&ident), "Declaration must have either a type or value\n");
+        dx_err(l, at_node(l, decl->data.decl.lval), "Declaration must have either a type or value\n");
         return nullptr;
     }
 
@@ -93,8 +105,43 @@ Node *parse_type(Lexer *l) {
             return ptr;
         }
         case TokenType::kLParen: {
-            todo("Implement function type parsing");
-            return nullptr;
+            Node *funcTy = create_node(l, NodeType::kFuncTy);
+            funcTy->data.funcTy.argTys = {};
+            lex_next(l);  // next (
+            for (;;) {
+                Token *tkn = lex_peek(l);
+                if (tkn->type == TokenType::kErr) return nullptr;
+                if (tkn->type == TokenType::kEof) {
+                    dx_err(l, at_token(tkn), "Expected argument type but reached end of file\n");
+                    return nullptr;
+                }
+                if (tkn->type == TokenType::kRParen) {
+                    lex_next(l);  // next )
+                    break;
+                }
+
+                Node *argTy = parse_type(l);
+                if (!argTy) return nullptr;
+                funcTy->data.funcTy.argTys.add(argTy);
+
+                if (check_peek(l, TokenType::kComma)) {
+                    lex_next(l);  // next ,
+                } else if (check_peek(l, TokenType::kRParen)) {
+                    lex_next(l);  // next )
+                    break;
+                } else {
+                    dx_err(l, at_token(lex_peek(l)), "Expected , to separate argment types\n");
+                    return nullptr;
+                }
+            }
+            if (check_peek(l, TokenType::kArrow)) {
+                lex_next(l);  // next ->
+                funcTy->data.funcTy.retTy = parse_type(l);
+                if (!funcTy->data.funcTy.retTy) return nullptr;
+            } else {
+                funcTy->data.func.retTy = nullptr;
+            }
+            return funcTy;
         }
         case TokenType::kEof: dx_err(l, at_token(tkn), "Expected a type but reached end of file\n");
         case TokenType::kErr: return nullptr;
@@ -134,8 +181,22 @@ Node *parse_operand(Lexer *l) {
             end_node(l, name);
             return name;
         }
+        case TokenType::kLParen: {
+            size_t lparenStartI = tkn->startI;
+            lex_next(l);  // next (
+            Node *expr = parse_expr(l);
+            if (!expr) return nullptr;
+            align_node_start(expr, lparenStartI);
+            if (!check_peek(l, TokenType::kRParen)) {
+                dx_err(l, at_node(l, expr), "Expected matching )\n");
+                return nullptr;
+            }
+            lex_next(l);  // next )
+            return expr;
+        }
         case TokenType::kColon: {
             Node *func = create_node(l, NodeType::kFunc);
+            func->data.func.params = {};
             lex_next(l);  // next :
             if (!check_peek(l, TokenType::kLParen)) {
                 dx_err(l, at_token(lex_peek(l)), "Expected ( for parameter list of function\n");
@@ -146,7 +207,7 @@ Node *parse_operand(Lexer *l) {
                 Token *tkn = lex_peek(l);
                 if (tkn->type == TokenType::kErr) return nullptr;
                 if (tkn->type == TokenType::kEof) {
-                    dx_err(l, at_token(lex_peek(l)), "Expected parameter declaration but reached end of file\n");
+                    dx_err(l, at_token(tkn), "Expected parameter declaration but reached end of file\n");
                     return nullptr;
                 }
                 if (tkn->type == TokenType::kRParen) {
@@ -158,10 +219,9 @@ Node *parse_operand(Lexer *l) {
                     dx_err(l, at_token(lex_peek(l)), "Expected parameter declaration\n");
                     return nullptr;
                 }
-
-                Token ident = *lex_peek(l);
-                lex_next(l);  // next 'ident'
-                Node *param = parse_decl_from_ident(l, ident);
+                Node *lval = parse_expr(l);
+                if (!lval) return nullptr;
+                Node *param = parse_decl_from_lval(l, lval);
                 if (!param) return nullptr;
                 func->data.func.params.add(param);
 
@@ -177,8 +237,10 @@ Node *parse_operand(Lexer *l) {
             }
             if (check_peek(l, TokenType::kArrow)) {
                 lex_next(l);  // next ->
-                func->data.func.retType = parse_type(l);
-                if (!func->data.func.retType) return nullptr;
+                func->data.func.retTy = parse_type(l);
+                if (!func->data.func.retTy) return nullptr;
+            } else {
+                func->data.func.retTy = nullptr;
             }
 
             if (check_peek(l, TokenType::kRetArrow)) {
@@ -204,6 +266,7 @@ Node *parse_operand(Lexer *l) {
 
 u8 get_precedence(TokenType op) {
     switch (op) {
+        case TokenType::kLParen: return 3;  // Function call
         case TokenType::kBitAnd: return 2;
         case TokenType::kAdd:
         case TokenType::kSubNeg: return 1;
@@ -234,6 +297,40 @@ Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
                 if (!infix->data.infix.right) return nullptr;
                 break;
             }
+            case TokenType::kLParen: {
+                Node *call = create_node(l, NodeType::kCall);
+                call->data.call.args = {};
+                call->data.call.callee = left;
+                lex_next(l);  // next (
+                for (;;) {
+                    Token *tkn = lex_peek(l);
+                    if (tkn->type == TokenType::kErr) return nullptr;
+                    if (tkn->type == TokenType::kEof) {
+                        dx_err(l, at_token(tkn), "Expected argument expression but reached end of file\n");
+                        return nullptr;
+                    }
+                    if (tkn->type == TokenType::kRParen) {
+                        lex_next(l);  // next )
+                        break;
+                    }
+
+                    Node *arg = parse_expr(l);
+                    if (!arg) return nullptr;
+                    call->data.call.args.add(arg);
+
+                    if (check_peek(l, TokenType::kComma)) {
+                        lex_next(l);  // next ,
+                    } else if (check_peek(l, TokenType::kRParen)) {
+                        lex_next(l);  // next )
+                        break;
+                    } else {
+                        dx_err(l, at_token(lex_peek(l)), "Expected , to separate call argments\n");
+                        return nullptr;
+                    }
+                }
+                left = call;
+                break;
+            }
             default: dx_err(l, at_token(lex_peek(l)), "Expected an infix operator\n"); return nullptr;
         }
     }
@@ -242,9 +339,63 @@ Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
 
 Node *parse_expr(Lexer *l) { return parse_infix(l, kLowPrecedence, parse_operand(l)); }
 
+Node *parse_if(Lexer *l) {
+    assert(check_peek(l, TokenType::kIf));
+    Node *ifstmt = create_node(l, NodeType::kIf);
+    lex_next(l);  // next if
+
+    ifstmt->data.ifstmt.cond = parse_expr(l);
+    if (!ifstmt->data.ifstmt.cond) return nullptr;
+
+    if (!check_peek(l, TokenType::kLCurl)) {
+        dx_err(l, at_token(lex_peek(l)), "Expected { to define body of if statement\n");
+        return nullptr;
+    }
+    ifstmt->data.ifstmt.then = parse_block(l);
+    if (!ifstmt->data.ifstmt.then) return nullptr;
+
+    if (check_peek(l, TokenType::kElse)) {
+        lex_next(l);  // next else
+        if (check_peek(l, TokenType::kIf)) {
+            ifstmt->data.ifstmt.alt = parse_if(l);
+        } else if (check_peek(l, TokenType::kLCurl)) {
+            ifstmt->data.ifstmt.alt = parse_block(l);
+        } else {
+            dx_err(l, at_token(lex_peek(l)), "Expected { to define else body or if keyword to define else if\n");
+            return nullptr;
+        }
+        if (!ifstmt->data.ifstmt.alt) return nullptr;
+    } else {
+        ifstmt->data.ifstmt.alt = nullptr;
+    }
+
+    end_node(l, ifstmt);
+    return ifstmt;
+}
+
+Node *parse_while(Lexer *l) {
+    assert(check_peek(l, TokenType::kWhile));
+    Node *whilestmt = create_node(l, NodeType::kWhile);
+    lex_next(l);  // next while
+
+    whilestmt->data.whilestmt.cond = parse_expr(l);
+    if (!whilestmt->data.whilestmt.cond) return nullptr;
+
+    if (!check_peek(l, TokenType::kLCurl)) {
+        dx_err(l, at_token(lex_peek(l)), "Expected { to define body of while statement\n");
+        return nullptr;
+    }
+    whilestmt->data.whilestmt.loop = parse_block(l);
+    if (!whilestmt->data.whilestmt.loop) return nullptr;
+
+    end_node(l, whilestmt);
+    return whilestmt;
+}
+
 Node *parse_block(Lexer *l) {
     assert(check_peek(l, TokenType::kLCurl));
     Node *block = create_node(l, NodeType::kBlock);
+    block->data.block.stmts = {};
     lex_next(l);  // next {
 
     for (;;) {
@@ -254,20 +405,28 @@ Node *parse_block(Lexer *l) {
             break;
         }
         switch (tkn->type) {
-            case TokenType::kIdent:
-                if (Node *declOrExpr = parse_decl_or_expr(l)) {
-                    block->data.block.stmts.add(declOrExpr);
-                    break;
+            case TokenType::kIf:
+                if (Node *ifstmt = parse_if(l)) {
+                    block->data.block.stmts.add(ifstmt);
+                } else {
+                    return nullptr;
                 }
-                return nullptr;
-            case TokenType::kIf: todo("Implement if statments\n"); return nullptr;
-            case TokenType::kWhile: todo("Implement while statments\n"); return nullptr;
+                break;
+            case TokenType::kWhile:
+                if (Node *whilestmt = parse_while(l)) {
+                    block->data.block.stmts.add(whilestmt);
+                } else {
+                    return nullptr;
+                }
+                break;
             case TokenType::kRet: {
                 Node *ret = create_node(l, NodeType::kRet);
                 lex_next(l);  // next ret
                 if (!check_peek(l, TokenType::kRCurl)) {
                     ret->data.ret.value = parse_expr(l);
                     if (!ret->data.ret.value) return nullptr;
+                } else {
+                    ret->data.ret.value = nullptr;
                 }
                 end_node(l, ret);
                 block->data.block.stmts.add(ret);
@@ -277,7 +436,12 @@ Node *parse_block(Lexer *l) {
                 dx_err(l, at_eof(l), "Expected another statement but reached the end of the file\n");
                 return nullptr;
             case TokenType::kErr: return nullptr;
-            default: return parse_expr(l);
+            default:
+                if (Node *declOrExpr = parse_decl_or_expr(l)) {
+                    block->data.block.stmts.add(declOrExpr);
+                } else {
+                    return nullptr;
+                }
         }
     }
     end_node(l, block);
@@ -288,9 +452,11 @@ Node *parse_block(Lexer *l) {
 
 Node *parse(Lexer *l) {
     Node *unit = create_node(l, NodeType::kUnit);
+    unit->data.unit.decls = {};
     while (lex_peek(l)->type != TokenType::kEof) {
         switch (lex_peek(l)->type) {
-            case TokenType::kIdent:
+            case TokenType::kErr: return nullptr;
+            default:
                 if (Node *declOrExpr = parse_decl_or_expr(l)) {
                     if (declOrExpr->type == NodeType::kDecl) {
                         unit->data.unit.decls.add(declOrExpr);
@@ -302,9 +468,6 @@ Node *parse(Lexer *l) {
                 } else {
                     return nullptr;
                 }
-                break;
-            case TokenType::kErr: return nullptr;
-            default: dx_err(l, at_token(lex_peek(l)), "Expected name for declaration\n"); return nullptr;
         }
     }
     end_node(l, unit);

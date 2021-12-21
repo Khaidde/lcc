@@ -97,20 +97,17 @@ bool is_bindigit_or_underscore(char c) { return is_bindigit(c) || c == '_'; }
 
 bool is_hexletter(char c) { return ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F'); }
 
-bool is_hexdigit_or_underscore(char c) { return is_hexletter(c) || c == '_'; }
-
 bool is_hexdigit(char c) { return is_number(c) || is_hexletter(c); }
 
-struct Keyword {
-    const char *str;
-    TokenType type;
+bool is_hexdigit_or_underscore(char c) { return is_hexdigit(c) || c == '_'; }
+
+constexpr TokenType kKeywords[]{
+    TokenType::kElse,
+    TokenType::kIf,
+    TokenType::kRet,
+    TokenType::kWhile,
 };
-constexpr Keyword kKeywords[]{
-    {"if", TokenType::kIf},
-    {"ret", TokenType::kRet},
-    {"while", TokenType::kWhile},
-};
-constexpr size_t kNumKeywords = sizeof(kKeywords) / sizeof(Keyword);
+constexpr size_t kNumKeywords = sizeof(kKeywords) / sizeof(TokenType);
 
 constexpr int strings_cmp(char const *a, char const *b) {
     return (*a != *b || *a == '\0') ? *a - *b : strings_cmp(a + 1, b + 1);
@@ -118,7 +115,8 @@ constexpr int strings_cmp(char const *a, char const *b) {
 
 constexpr bool is_sorted(size_t ndx) {
     if (ndx >= kNumKeywords - 1) return true;
-    return strings_cmp(kKeywords[ndx].str, kKeywords[ndx + 1].str) <= 0 && is_sorted(ndx + 1);
+    return strings_cmp(token_type_string(kKeywords[ndx]), token_type_string(kKeywords[ndx + 1])) <= 0 &&
+           is_sorted(ndx + 1);
 }
 
 static_assert(is_sorted(0), "Keywords must be listed alphabetically");
@@ -128,12 +126,12 @@ Token *lex_keyword_or_ident(Lexer *l) {
     int kei = kNumKeywords - 1;
     while (char c = peek_char(l)) {
         if (!is_letter_or_underscore(c) && !is_number(c)) break;
-        while (ksi <= kei && kKeywords[ksi].str[l->curLen] < c) ksi++;
-        while (kei >= ksi && kKeywords[kei].str[l->curLen] > c) kei--;
+        while (ksi <= kei && token_type_string(kKeywords[ksi])[l->curLen] < c) ksi++;
+        while (kei >= ksi && token_type_string(kKeywords[kei])[l->curLen] > c) kei--;
         l->curLen++;
     }
     if (ksi == kei) {
-        return create_token(l, kKeywords[kei].type);
+        return create_token(l, kKeywords[kei]);
     }
     return create_ident_token(l);
 }
@@ -158,6 +156,12 @@ Token *lex_binary(Lexer *l, bool pos) {
     }
     u32 val = 0;
     while (char c = peek_char(l)) {
+        if (!is_bindigit(c) && is_number(c)) {
+            char digit = peek_char(l);
+            l->curLen++;
+            dx_err(l, curr(l), "Invalid binary digit: %c\n", digit);
+            return ret_err(l);
+        }
         if (!c || !is_bindigit_or_underscore(c)) break;
         l->curLen++;
         if (c != '_') {
@@ -224,37 +228,6 @@ Token *lex_integer(Lexer *l) {
 
 }  // namespace
 
-const char *token_type_string(TokenType type) {
-    switch (type) {
-        case TokenType::kAdd: return "+";
-        case TokenType::kAddAdd: return "++";
-        case TokenType::kAddEq: return "+=";
-        case TokenType::kSubNeg: return "-";
-        case TokenType::kSubSub: return "--";
-        case TokenType::kSubEq: return "-=";
-        case TokenType::kBitAnd: return "&";
-        case TokenType::kBitAndEq: return "&=";
-        case TokenType::kIntLiteral: return "'integer'";
-        case TokenType::kIdent: return "'identifier'";
-        case TokenType::kPtr: return "*";
-        case TokenType::kDeref: return "@";
-        case TokenType::kLParen: return "(";
-        case TokenType::kRParen: return ")";
-        case TokenType::kLCurl: return "{";
-        case TokenType::kRCurl: return "}";
-        case TokenType::kAssign: return "=";
-        case TokenType::kColon: return ":";
-        case TokenType::kComma: return ",";
-        case TokenType::kArrow: return "->";
-        case TokenType::kRetArrow: return "=>";
-        case TokenType::kIf: return "if";
-        case TokenType::kWhile: return "while";
-        case TokenType::kRet: return "ret";
-        case TokenType::kEof: return "'eof'";
-        case TokenType::kErr: return "'error'";
-    }
-}
-
 Lexer *lexer_init(LString *src) {
     Lexer *lex = mem::malloc<Lexer>();
     lex->src = src;
@@ -314,8 +287,15 @@ Token *lex_next(Lexer *l) {
             } else {
                 return create_token(l, TokenType::kBitAnd);
             }
-            break;
-        case '*': l->curLen++; return create_token(l, TokenType::kPtr);
+        case '*':
+            l->curLen++;
+            if (peek_char(l) == '/') {
+                l->curLen++;
+                dx_err(l, curr(l), "Unexpected */ with no matching /* for multiline comment\n", l->line, c);
+                return ret_err(l);
+            } else {
+                return create_token(l, TokenType::kPtr);
+            }
         case '@': l->curLen++; return create_token(l, TokenType::kDeref);
         case '(': l->curLen++; return create_token(l, TokenType::kLParen);
         case ')': l->curLen++; return create_token(l, TokenType::kRParen);

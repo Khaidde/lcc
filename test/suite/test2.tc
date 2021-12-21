@@ -1,9 +1,20 @@
-test = asdf+ ++this & 4
-main = 3 + 5
+val = 3 + 5
 
 main = :(argc: u32, argv = 3) -> u64 {
   asdf : u32 = 5 + this & 7
-  asdf2 = 5 & *this - 7
+
+  if coolcond {
+    asdf2 = 5 & *this - 7
+  } else if othercond {
+    asdf + @asdf2 - 0
+  } else {
+    tat
+  }
+
+  while @0x6000 + 3 {
+    asdf = 2
+  }
+
   asdf + @asdf2 - 0
   add = :(a:u32, b:u32) -> u32 => a + b
 }

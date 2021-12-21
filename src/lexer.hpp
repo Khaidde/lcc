@@ -29,13 +29,44 @@ enum class TokenType {
     kArrow,
     kRetArrow,
     kIf,
+    kElse,
     kWhile,
     kRet,
     kEof,
     kErr,
 };
 
-const char *token_type_string(TokenType type);
+constexpr const char *token_type_string(TokenType type) {
+    switch (type) {
+        case TokenType::kAdd: return "+";
+        case TokenType::kAddAdd: return "++";
+        case TokenType::kAddEq: return "+=";
+        case TokenType::kSubNeg: return "-";
+        case TokenType::kSubSub: return "--";
+        case TokenType::kSubEq: return "-=";
+        case TokenType::kBitAnd: return "&";
+        case TokenType::kBitAndEq: return "&=";
+        case TokenType::kIntLiteral: return "'integer'";
+        case TokenType::kIdent: return "'identifier'";
+        case TokenType::kPtr: return "*";
+        case TokenType::kDeref: return "@";
+        case TokenType::kLParen: return "(";
+        case TokenType::kRParen: return ")";
+        case TokenType::kLCurl: return "{";
+        case TokenType::kRCurl: return "}";
+        case TokenType::kAssign: return "=";
+        case TokenType::kColon: return ":";
+        case TokenType::kComma: return ",";
+        case TokenType::kArrow: return "->";
+        case TokenType::kRetArrow: return "=>";
+        case TokenType::kIf: return "if";
+        case TokenType::kElse: return "else";
+        case TokenType::kWhile: return "while";
+        case TokenType::kRet: return "ret";
+        case TokenType::kEof: return "'eof'";
+        case TokenType::kErr: return "'error'";
+    }
+}
 
 struct Token {
     TokenType type;

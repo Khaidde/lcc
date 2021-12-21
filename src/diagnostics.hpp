@@ -15,11 +15,13 @@ struct DxInfo {
     size_t len;
 };
 
-DxInfo at_node(Lexer *l, Node *node);
+DxInfo at_point(size_t startI);
+
+DxInfo curr(Lexer *l);
 
 DxInfo at_token(Token *token);
 
-DxInfo curr(Lexer *l);
+DxInfo at_node(Lexer *l, Node *node);
 
 DxInfo at_eof(Lexer *l);
 

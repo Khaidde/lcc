@@ -2,6 +2,12 @@
 
 namespace lcc {
 
+DxInfo at_point(size_t startI) { return {0, startI, 1}; }
+
+DxInfo curr(Lexer *l) { return {l->line, l->curI, l->curLen}; }
+
+DxInfo at_token(Token *token) { return {token->line, token->startI, token->len}; }
+
 DxInfo at_node(Lexer *l, Node *node) {
     size_t depth = 0;
     size_t ndx = node->endI;
@@ -15,12 +21,14 @@ DxInfo at_node(Lexer *l, Node *node) {
         }
         ndx--;
     }
+    size_t end = ndx;
+    ndx = node->startI;
+    while (ndx < end) {
+        if (l->src->data[ndx + 1] == '\r' || l->src->data[ndx + 1] == '\n') break;
+        ndx++;
+    }
     return {0, node->startI, ndx - node->startI + 1};
 }
-
-DxInfo at_token(Token *token) { return {token->line, token->startI, token->len}; }
-
-DxInfo curr(Lexer *l) { return {l->line, l->curI, l->curLen}; }
 
 DxInfo at_eof(Lexer *l) {
     size_t ndx = l->src->size - 1;
