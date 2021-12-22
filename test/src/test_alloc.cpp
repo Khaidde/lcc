@@ -1,5 +1,6 @@
 #include <stdio.h>
 
+#include "hashmap.hpp"
 #include "list.hpp"
 #include "mem.hpp"
 
@@ -49,9 +50,41 @@ void find_string(const char *str) {
     }
 }
 
+u32 int_hash(int &val) { return (u32)val; }
+
+bool int_eq(int &val1, int &val2) { return val1 == val2; }
+
 int main() {
-    find_string("a");
-    find_string("_Butterfly _a+sdf");
+    LMap<int, int, int_hash, int_eq> map;
+    map.init(50);
+
+    LList<int> keys = {};
+
+    int factor = 1;
+    for (int i = 0; i < 30; i++) {
+        factor *= (i + 1);
+        int val = i;
+        // factor %= 1000;
+        keys.add(factor);
+        if (!map.try_put(factor, val)) {
+            printf("wtf-%d-%d\n", factor, i);
+        }
+    }
+
+    for (size_t i = 0; i < map.capacity; i++) {
+        if (map.table[i].psl != 0) {
+            printf("[%d]-%d-%d\n", map.table[i].psl, map.table[i].key, map.table[i].val);
+        } else {
+            printf("-\n");
+        }
+    }
+    // int val = 255024;
+    for (size_t i = 0; i < 30; i++) {
+        printf("-->%d\n", *map.get(keys.get(i)));
+    }
+
+    // find_string("a");
+    // find_string("_Butterfly _a+sdf");
     return 0;
     /*
     printUseColor = false;
@@ -70,7 +103,7 @@ int main() {
     }
 
     // An idiot did this
-    mem::malloc<int>(4);
+    mem::malloc<int>(1);
 
     for (int i = num / 3; i < num; i++) {
         testL.add(test[i]);

@@ -11,7 +11,7 @@ template <typename T>
 struct LList {
     void init(size_t initialSize) {
         assert(initialSize && "Initial size of list must be positive");
-        data = mem::malloc<T>(sizeof(T) * initialSize);
+        data = mem::c_malloc<T>(initialSize);
         size = 0;
         capacity = initialSize;
     }
@@ -24,19 +24,17 @@ struct LList {
     }
 
     void resize() {
-        size_t oldCapacity = capacity;
         capacity = (capacity << 1) - (capacity >> 1) + 8;
-        data = mem::realloc<T>(data, oldCapacity * sizeof(T), capacity * sizeof(T));
+        data = mem::c_realloc<T>(data, capacity);
     }
 
     void ensure_capacity(size_t newCapacity) {
         if (capacity < newCapacity) {
-            size_t oldCapacity = capacity;
             while (capacity < newCapacity) {
                 // capacity = capcity * 1.5 + 8
                 capacity = (capacity << 1) - (capacity >> 1) + 8;
             }
-            data = mem::realloc<T>(data, oldCapacity * sizeof(T), capacity * sizeof(T));
+            data = mem::c_realloc<T>(data, capacity);
         }
     }
 

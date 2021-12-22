@@ -28,7 +28,7 @@ LString lstr_create(LStringView &strView) {
 }
 
 const char *lstr_raw_view(LString &src, size_t off, size_t len) {
-    char *data = mem::malloc<char>(len + 1);
+    char *data = mem::c_malloc<char>(len + 1);
     strncpy(data, src.data + off, len);
     data[len] = '\0';
     return data;

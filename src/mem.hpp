@@ -1,6 +1,7 @@
 #ifndef LCC_MEM_HPP
 #define LCC_MEM_HPP
 
+#include "malloc.h"
 #include "util.hpp"
 
 namespace lcc::mem {
@@ -31,14 +32,31 @@ static inline T *malloc() {
 }
 
 template <class T>
-static inline T *malloc(size_t bytes) {
-    return (T *)allocator.malloc(bytes);
+static inline T *malloc(size_t count) {
+    return (T *)allocator.malloc(sizeof(T) * count);
 }
 
 template <class T>
-static inline T *realloc(void *ptr, size_t prevSize, size_t newSize) {
-    return (T *)allocator.realloc(ptr, prevSize, newSize);
+static inline T *realloc(void *ptr, size_t prevCount, size_t newCount) {
+    return (T *)allocator.realloc(ptr, sizeof(T) * prevCount, sizeof(T) * newCount);
 }
+
+template <class T>
+static inline T *c_malloc() {
+    return (T *)::malloc(sizeof(T));
+}
+
+template <class T>
+static inline T *c_malloc(size_t count) {
+    return (T *)::malloc(sizeof(T) * count);
+}
+
+template <class T>
+static inline T *c_realloc(void *ptr, size_t newCount) {
+    return (T *)::realloc(ptr, sizeof(T) * newCount);
+}
+
+static inline void c_free(void *ptr) { ::free(ptr); }
 
 }  // namespace lcc::mem
 

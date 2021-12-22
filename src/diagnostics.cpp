@@ -52,7 +52,7 @@ struct LineQueue {
 
 LineQueue init_line_queue() {
     LineQueue queue;
-    queue.data = mem::malloc<LStringView>(sizeof(LStringView) * numContextLines);
+    queue.data = mem::malloc<LStringView>(numContextLines);
     return queue;
 }
 
