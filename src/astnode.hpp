@@ -6,10 +6,41 @@
 
 namespace lcc {
 
+struct Type;
+struct Node;
+
+enum class TypeKind {
+    kBase,
+    kPtr,
+    kFuncTy,
+};
+
+struct BaseType {
+    LStringView name;
+};
+
+struct PtrType {
+    Type *inner;
+};
+
+struct FuncType {
+    LList<Type *> argTys;
+    Type *retTy;
+};
+
+struct Type {
+    TypeKind kind;
+    union {
+        BaseType base;
+        PtrType ptr;
+        FuncType func;
+    } data;
+};
+
 enum class NodeType {
     kUnit,
     kDecl,
-    kFuncTy,
+    kType,
     kIntLit,
     kName,
     kPrefix,
@@ -22,22 +53,19 @@ enum class NodeType {
     kRet,
 };
 
-struct Node;
-
 struct UnitNode {
+    LString *src;
     LList<Node *> decls;
 };
 
 struct DeclNode {
     Node *lval;
-    Node *ty;
+    Node *staticTy;
     Node *rval;
-    bool isDecl;
-};
 
-struct FuncTypeNode {
-    LList<Node *> argTys;
-    Node *retTy;
+    bool isDecl;
+    bool isChecked;
+    Type *resolvedTy;
 };
 
 struct IntLitNode {
@@ -97,7 +125,7 @@ struct Node {
     union {
         UnitNode unit;
         DeclNode decl;
-        FuncTypeNode funcTy;
+        Type type;
         IntLitNode intLit;
         NameNode name;
         PrefixNode prefix;
@@ -112,6 +140,8 @@ struct Node {
 };
 
 const char *node_type_string(NodeType type);
+
+const char *type_string(Type *type);
 
 void print_ast(Node *node);
 

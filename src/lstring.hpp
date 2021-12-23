@@ -26,6 +26,10 @@ void lstr_cat(LString &dest, const char *src);
 
 LStringView lstr_view(const char *str, size_t off, size_t len);
 
+u32 lstr_hash(LStringView &str);
+
+bool lstr_equal(LStringView &str1, LStringView &str2);
+
 }  // namespace lcc
 
 #endif

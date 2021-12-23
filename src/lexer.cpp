@@ -79,7 +79,7 @@ Token *lex_multi_line_comment(Lexer *l) {
             }
         }
     }
-    dx_err(l, at_eof(l), "Could not find matching */ for multiline comment\n");
+    dx_err(l->src, at_eof(l), "Could not find matching */ for multiline comment\n");
     return ret_err(l);
 }
 
@@ -137,7 +137,7 @@ Token *lex_keyword_or_ident(Lexer *l) {
 }
 
 Token *create_overflow_token(Lexer *l) {
-    dx_err(l, curr(l), "Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(*l->src, l->curI, l->curLen));
+    dx_err(l->src, curr(l), "Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(*l->src, l->curI, l->curLen));
     return ret_err(l);
 }
 
@@ -151,7 +151,7 @@ Token *lex_binary(Lexer *l, bool pos) {
     if (!is_bindigit(peek_char(l))) {
         char digit = peek_char(l);
         l->curLen++;
-        dx_err(l, curr(l), "Invalid binary digit: %c\n", digit);
+        dx_err(l->src, curr(l), "Invalid binary digit: %c\n", digit);
         return ret_err(l);
     }
     u32 val = 0;
@@ -159,7 +159,7 @@ Token *lex_binary(Lexer *l, bool pos) {
         if (!is_bindigit(c) && is_number(c)) {
             char digit = peek_char(l);
             l->curLen++;
-            dx_err(l, curr(l), "Invalid binary digit: %c\n", digit);
+            dx_err(l->src, curr(l), "Invalid binary digit: %c\n", digit);
             return ret_err(l);
         }
         if (!c || !is_bindigit_or_underscore(c)) break;
@@ -176,7 +176,7 @@ Token *lex_hexadecimal(Lexer *l, bool pos) {
     if (!is_hexdigit(peek_char(l))) {
         char digit = peek_char(l);
         l->curLen++;
-        dx_err(l, curr(l), "Invalid hexadecimal digit: %c\n", digit);
+        dx_err(l->src, curr(l), "Invalid hexadecimal digit: %c\n", digit);
         return ret_err(l);
     }
     u32 val = 0;
@@ -260,7 +260,7 @@ Token *lex_next(Lexer *l) {
                     l->curLen++;
                     if (Token *rv = lex_multi_line_comment(l)) return rv;
                     return lex_next(l);
-                default: dx_err(l, curr(l), "Division not yet supported\n"); return ret_err(l);
+                default: dx_err(l->src, curr(l), "Division not yet supported\n"); return ret_err(l);
             }
         case '+':
             if (is_number(peek_peek_char(l))) return lex_integer(l);
@@ -291,7 +291,7 @@ Token *lex_next(Lexer *l) {
             l->curLen++;
             if (peek_char(l) == '/') {
                 l->curLen++;
-                dx_err(l, curr(l), "Unexpected */ with no matching /* for multiline comment\n", l->line, c);
+                dx_err(l->src, curr(l), "Unexpected */ with no matching /* for multiline comment\n", l->line, c);
                 return ret_err(l);
             } else {
                 return create_token(l, TokenType::kPtr);
@@ -316,7 +316,7 @@ Token *lex_next(Lexer *l) {
             if (is_letter_or_underscore(c)) return lex_keyword_or_ident(l);
             if (is_number(c)) return lex_integer(l);
 
-            dx_err(l, curr(l), "Unexpected character[%d]: '%c'\n", l->line, c);
+            dx_err(l->src, curr(l), "Unexpected character[%d]: '%c'\n", l->line, c);
             return ret_err(l);
     }
 }

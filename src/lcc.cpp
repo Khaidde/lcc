@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "analysis.hpp"
 #include "diagnostics.hpp"
 #include "file.hpp"
 #include "lexer.hpp"
@@ -166,12 +167,14 @@ ErrCode compile(const char *path) {
     info("Compiling %s...\n", path);
 
     Lexer *lexer = lexer_init(&output);
-    if (Node *unit = parse(lexer)) {
-        print_ast(unit);
-        return ErrCode::kSuccess;
-    } else {
-        return ErrCode::kFailure;
-    }
+
+    Node *unit = parse(lexer);
+    if (!unit) return ErrCode::kFailure;
+
+    if (analyze_unit(unit)) return ErrCode::kFailure;
+
+    print_ast(unit);
+    return ErrCode::kSuccess;
 }
 
 }  // namespace lcc

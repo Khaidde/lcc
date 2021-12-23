@@ -6,32 +6,6 @@ namespace lcc {
 
 namespace {
 
-void print_type(Node *node) {
-    switch (node->type) {
-        case NodeType::kFuncTy:
-            printf("(");
-            for (size_t i = 0; i < node->data.funcTy.argTys.size; i++) {
-                print_type(node->data.funcTy.argTys.data[i]);
-                if (i + 1 < node->data.funcTy.argTys.size) {
-                    printf(", ");
-                }
-            }
-            printf(") -> ");
-            if (node->data.funcTy.retTy) {
-                print_type(node->data.funcTy.retTy);
-            } else {
-                printf("void");
-            }
-            break;
-        case NodeType::kName: printf("%.*s", node->data.name.ident.len, node->data.name.ident.src); break;
-        case NodeType::kPrefix:
-            printf("%s", token_type_string(node->data.prefix.op));
-            print_type(node->data.prefix.inner);
-            break;
-        default: printf("[TODO TYPE]");
-    }
-}
-
 void r_print_ast(Node *node, size_t depth) {
     print_color(kAnsiColorGreen);
     printf("%0*s%s", depth * 2, "", node_type_string(node->type));
@@ -50,11 +24,13 @@ void r_print_ast(Node *node, size_t depth) {
 
             printf(":");
 
-            if (node->data.decl.ty) {
+            if (node->data.decl.resolvedTy) {
                 print_color(kAnsiColorYellow);
-                printf("'");
-                print_type(node->data.decl.ty);
-                printf("'");
+                printf("'%s'", type_string(node->data.decl.resolvedTy));
+                reset_print_color();
+            } else if (node->data.decl.staticTy) {
+                print_color(kAnsiColorRed);
+                printf("'%s'", type_string(&node->data.decl.staticTy->data.type));
                 reset_print_color();
             } else {
                 printf("unknown");
@@ -64,11 +40,9 @@ void r_print_ast(Node *node, size_t depth) {
             r_print_ast(node->data.decl.lval, depth + 1);
             if (node->data.decl.rval) r_print_ast(node->data.decl.rval, depth + 1);
             break;
-        case NodeType::kFuncTy:
-            print_color(kAnsiColorYellow);
-            printf(" '");
-            print_type(node);
-            printf("'\n");
+        case NodeType::kType:
+            print_color(kAnsiColorRed);
+            printf("'%s'", type_string(&node->data.type));
             reset_print_color();
             break;
         case NodeType::kIntLit:
@@ -106,10 +80,8 @@ void r_print_ast(Node *node, size_t depth) {
             break;
         case NodeType::kFunc:
             if (node->data.func.retTy) {
-                print_color(kAnsiColorYellow);
-                printf(" '");
-                print_type(node->data.func.retTy);
-                printf("'");
+                print_color(kAnsiColorRed);
+                printf(" '%s'", type_string(&node->data.func.retTy->data.type));
                 reset_print_color();
             }
             printf("\n");
@@ -154,7 +126,7 @@ const char *node_type_string(NodeType type) {
     switch (type) {
         case NodeType::kUnit: return "Unit";
         case NodeType::kDecl: return "Decl";
-        case NodeType::kFuncTy: return "FuncTy";
+        case NodeType::kType: return "Type";
         case NodeType::kIntLit: return "IntLit";
         case NodeType::kName: return "Name";
         case NodeType::kPrefix: return "Prefix";
@@ -165,6 +137,34 @@ const char *node_type_string(NodeType type) {
         case NodeType::kIf: return "If";
         case NodeType::kWhile: return "While";
         case NodeType::kRet: return "Ret";
+    }
+}
+
+// TODO: optimize this, particularly look at all string creations in function type
+const char *type_string(Type *type) {
+    switch (type->kind) {
+        case TypeKind::kBase: return lstr_create(type->data.base.name).data;
+        case TypeKind::kPtr: {
+            LString res = lstr_create("*");
+            lstr_cat(res, type_string(type->data.ptr.inner));
+            return res.data;
+        }
+        case TypeKind::kFuncTy: {
+            LString res = lstr_create("(");
+            for (size_t i = 0; i < type->data.func.argTys.size; i++) {
+                lstr_cat(res, type_string(type->data.func.argTys.data[i]));
+                if (i + 1 < type->data.func.argTys.size) {
+                    lstr_cat(res, ", ");
+                }
+            }
+            lstr_cat(res, ") -> ");
+            if (type->data.func.retTy) {
+                lstr_cat(res, type_string(type->data.func.retTy));
+            } else {
+                lstr_cat(res, "void");
+            }
+            return res.data;
+        }
     }
 }
 

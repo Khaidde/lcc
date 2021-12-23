@@ -1,5 +1,12 @@
-val = 3 + 5
+d = 5
+a = b
+b = c
+c = a
+main = 2
 
+// main: *(u16, u16) -> u16 = 5
+
+/*
 main = :(argc: u32, argv = 3) -> u64 {
   asdf : u32 = 5 + this & 7
 
@@ -18,3 +25,4 @@ main = :(argc: u32, argv = 3) -> u64 {
   asdf + @asdf2 - 0
   add = :(a:u32, b:u32) -> u32 => a + b
 }
+*/

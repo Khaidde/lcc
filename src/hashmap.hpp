@@ -2,26 +2,9 @@
 #define LCC_HASHMAP_HPP
 
 #include "lstring.hpp"
-#include "stdio.h"
 #include "util.hpp"
 
 namespace lcc {
-
-u32 str_hash(LStringView &key) {
-    u32 hash = 0;
-    for (size_t i = 0; i < key.len; i++) {
-        hash = ((hash << 5) - hash) + (u32)key.src[i];
-    }
-    return hash;
-}
-
-bool str_equal(LStringView &key1, LStringView &key2) {
-    if (key1.len != key2.len) return false;
-    for (size_t i = 0; i < key1.len; i++) {
-        if (key1.src[i] != key2.src[i]) return false;
-    }
-    return true;
-}
 
 // Robin hood algorithm based hashmap
 template <typename K, typename V, u32 hash_func(K &), bool equal_func(K &, K &)>
@@ -41,7 +24,7 @@ struct LMap {
             table[i].psl = 0;
         }
     }
-    bool try_put(K &key, V &val) {
+    V *try_put(K &key, V &val) {  // Returns duplicate key, val if found
         // Load factor of 0.67...
         if ((size + 1) * 3 >= capacity << 1) {
             Entry *oldTable = table;
@@ -60,9 +43,7 @@ struct LMap {
         u32 ndx = hash_func(key) % capacity;
         for (size_t off = 0; off < maxPSL; off++) {
             Entry *entry = &table[ndx];
-            if (entry->psl && equal_func(entry->key, key)) {
-                return &entry->val;
-            }
+            if (entry->psl && equal_func(entry->key, key)) return &entry->val;
             ndx = (ndx + 1) % capacity;
         }
         return nullptr;
@@ -74,17 +55,18 @@ struct LMap {
     size_t maxPSL;
 
 private:
-    bool internal_try_put(K &key, V &val) {
+    V *internal_try_put(K &key, V &val) {
         u32 ndx = hash_func(key) % capacity;
         for (size_t off = 0, p = 1; off < capacity; off++, p++) {
             Entry *entry = &table[ndx];
             if (entry->psl == 0) {
+                if (p > maxPSL) maxPSL = p;
                 *entry = {key, val, p};
                 size++;
-                return true;
+                return nullptr;
             }
 
-            if (equal_func(entry->key, key)) return false;
+            if (equal_func(entry->key, key)) return &entry->val;
 
             if (entry->psl < p) {
                 if (p > maxPSL) maxPSL = p;
@@ -97,7 +79,7 @@ private:
             ndx = (ndx + 1) % capacity;
         }
         assert(false && "Map is full");
-        return false;
+        return nullptr;
     }
 };
 

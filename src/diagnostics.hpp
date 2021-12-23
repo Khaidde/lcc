@@ -21,17 +21,17 @@ DxInfo curr(Lexer *l);
 
 DxInfo at_token(Token *token);
 
-DxInfo at_node(Lexer *l, Node *node);
+DxInfo at_node(LString *src, Node *node);
 
 DxInfo at_eof(Lexer *l);
 
 extern u8 numContextLines;
 
-void display_context(Lexer *l, DxInfo &dxinfo);
+void display_context(LString *src, DxInfo &dxinfo);
 
 template <typename... Args>
-void dx_err(Lexer *l, DxInfo dxinfo, const char *error, Args... args) {
-    display_context(l, dxinfo);
+void dx_err(LString *src, DxInfo dxinfo, const char *error, Args... args) {
+    display_context(src, dxinfo);
     err(error, args...);
 }
 
