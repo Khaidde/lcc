@@ -32,8 +32,9 @@ bool scope_enter(SymbolTable *table) {
 
 void scope_exit(SymbolTable *table) { mem::c_free(table->scopes[--table->size].table); }
 
-Node *scope_bind(SymbolTable *table, LStringView &symbol, Node *decl) {
-    if (Node **other = table->scopes[table->size - 1].try_put(symbol, decl)) {
+Node *scope_bind(SymbolTable *table, Node *decl) {
+    assert(decl->data.decl.lval->type == NodeType::kName && "Lvalue of decl should be a name");
+    if (Node **other = table->scopes[table->size - 1].try_put(decl->data.decl.lval->data.name.ident, decl)) {
         return *other;
     } else {
         return nullptr;
@@ -56,24 +57,20 @@ struct Context {
 
 bool analyze_decl(Context *ctx, Node *decl);
 
-namespace builtin {
-Type u16 = {TypeKind::kBase, {{"u16", 3}}};
-
-}  // namespace builtin
-
 bool is_type_equal(Type *t1, Type *t2) {
     if (!t1 && !t2) return true;
     if (!t1 || !t2) return false;
     if (t1->kind != t2->kind) return false;
 
     switch (t1->kind) {
-        case TypeKind::kBase: return lstr_equal(t1->data.base.name, t2->data.base.name);
+        case TypeKind::kNone: return true;
+        case TypeKind::kBase: return t1->data.base.kind == t2->data.base.kind;
         case TypeKind::kPtr: return is_type_equal(t1->data.ptr.inner, t2->data.ptr.inner);
         case TypeKind::kFuncTy:
-            if (t1->data.func.argTys.size != t2->data.func.argTys.size) return false;
+            if (t1->data.func.paramTys.size != t2->data.func.paramTys.size) return false;
             if (!is_type_equal(t1->data.func.retTy, t2->data.func.retTy)) return false;
-            for (size_t i = 0; i < t1->data.func.argTys.size; i++) {
-                if (!is_type_equal(t1->data.func.argTys.data[i], t2->data.func.argTys.data[i])) {
+            for (size_t i = 0; i < t1->data.func.paramTys.size; i++) {
+                if (!is_type_equal(t1->data.func.paramTys.data[i], t2->data.func.paramTys.data[i])) {
                     return false;
                 }
             }
@@ -97,14 +94,14 @@ Type *resolve_prefix(Context *ctx, Node *prefix) {
 
     switch (prefix->data.prefix.op) {
         case TokenType::kSubNeg:
-            if (is_type_equal(inner, &builtin::u16)) {
+            if (is_type_equal(inner, &builtin_type::u16)) {
                 return inner;
             }
             dx_err(ctx->src, at_node(ctx->src, prefix->data.prefix.inner),
                    "Argument type of negation '-' expected be an integer: Found '%s'\n", type_string(inner));
             return nullptr;
         case TokenType::kSubSub:
-            if (inner->kind == TypeKind::kPtr || is_type_equal(inner, &builtin::u16)) {
+            if (inner->kind == TypeKind::kPtr || is_type_equal(inner, &builtin_type::u16)) {
                 return inner;
             }
             dx_err(ctx->src, at_node(ctx->src, prefix->data.prefix.inner),
@@ -131,13 +128,12 @@ Type *resolve_prefix(Context *ctx, Node *prefix) {
 
 Type *resolve_type(Context *ctx, Node *expr) {
     switch (expr->type) {
-        case NodeType::kIntLit: return &builtin::u16;
+        case NodeType::kIntLit: return &builtin_type::u16;
         case NodeType::kName:
             if (Node *decl = scope_lookup(ctx->table, expr->data.name.ident)) {
                 if (analyze_decl(ctx, decl)) return nullptr;
                 return decl->data.decl.resolvedTy;
             } else {
-                printf("what\n");
                 dx_err(ctx->src, at_node(ctx->src, expr), "No definition found for '%s'\n",
                        lstr_create(expr->data.name.ident).data);
                 return nullptr;
@@ -146,9 +142,19 @@ Type *resolve_type(Context *ctx, Node *expr) {
         case NodeType::kInfix: {
             Type *ltype = resolve_type(ctx, expr->data.infix.left);
             if (!ltype) return nullptr;
+            if (ltype->kind == TypeKind::kNone) {
+                dx_err(ctx->src, at_node(ctx->src, expr->data.infix.left),
+                       "Cannot use expression of type 'none' in infix operation\n");
+                return nullptr;
+            }
 
             Type *rtype = resolve_type(ctx, expr->data.infix.right);
             if (!rtype) return nullptr;
+            if (rtype->kind == TypeKind::kNone) {
+                dx_err(ctx->src, at_node(ctx->src, expr->data.infix.right),
+                       "Cannot use expression of type 'none' in infix operation\n");
+                return nullptr;
+            }
 
             if (!is_type_equal(ltype, rtype)) {
                 dx_err(ctx->src, at_node(ctx->src, expr),
@@ -156,7 +162,52 @@ Type *resolve_type(Context *ctx, Node *expr) {
                        type_string(rtype));
                 return nullptr;
             }
+
+            if (!is_type_equal(ltype, &builtin_type::u16)) {
+                dx_err(ctx->src, at_node(ctx->src, expr),
+                       "Argument types of infix operator expected to be integers: Found '%s'\n", type_string(ltype));
+                return nullptr;
+            }
             return ltype;
+        }
+        case NodeType::kCall: {
+            Type *ctype = resolve_type(ctx, expr->data.call.callee);
+            if (!ctype) return nullptr;
+            if (ctype->kind != TypeKind::kFuncTy) {
+                dx_err(ctx->src, at_node(ctx->src, expr->data.call.callee),
+                       "Expression has type '%s' which cannot be called\n", type_string(ctype));
+                return nullptr;
+            }
+            return ctype->data.func.retTy;
+        }
+        case NodeType::kFunc: {
+            Type *funcTy = create_type(TypeKind::kFuncTy);
+            funcTy->data.func.paramTys = {};
+            if (expr->data.func.params.size) funcTy->data.func.paramTys.init(expr->data.func.params.size);
+            for (size_t i = 0; i < expr->data.func.params.size; i++) {
+                Node *decl = expr->data.func.params.data[i];
+                if (!decl->data.decl.staticTy) {
+                    dx_err(ctx->src, at_node(ctx->src, decl), "Function parameter must explicitly specify a type\n");
+                    return nullptr;
+                }
+                decl->data.decl.resolvedTy = &decl->data.decl.staticTy->data.type;
+                funcTy->data.func.paramTys.add(decl->data.decl.resolvedTy);
+            }
+            if (expr->data.func.retTy) {
+                funcTy->data.func.retTy = &expr->data.func.retTy->data.type;
+            } else if (expr->data.func.body->type == NodeType::kBlock) {
+                funcTy->data.func.retTy = &builtin_type::none;
+            } else {
+                // TODO: return type inference for single line function seems hairy
+                scope_enter(ctx->table);
+                for (size_t i = 0; i < expr->data.func.params.size; i++) {
+                    scope_bind(ctx->table, expr->data.func.params.data[i]);
+                }
+                funcTy->data.func.retTy = resolve_type(ctx, expr->data.func.body);
+                if (!funcTy->data.func.retTy) return nullptr;
+                scope_exit(ctx->table);
+            }
+            return funcTy;
         }
         default: todo("Cannot resolve type of node %s\n", node_type_string(expr->type)); assert(false);
     }
@@ -168,7 +219,7 @@ bool analyze_decl(Context *ctx, Node *decl) {
     if (decl->data.decl.resolvedTy) return false;
 
     if (decl->data.decl.isChecked) {
-        dx_err(ctx->src, at_node(ctx->src, decl), "Detected circular declaration\n");
+        dx_err(ctx->src, at_node(ctx->src, decl), "Detected circular dependency\n");
         return true;
     }
     decl->data.decl.isChecked = true;
@@ -178,17 +229,28 @@ bool analyze_decl(Context *ctx, Node *decl) {
     if (hasRval) {
         decl->data.decl.resolvedTy = resolve_type(ctx, decl->data.decl.rval);
         if (!decl->data.decl.resolvedTy) return true;
+        if (decl->data.decl.resolvedTy->kind == TypeKind::kNone) {
+            dx_err(ctx->src, at_node(ctx->src, decl->data.decl.rval),
+                   "Cannot assign value of type 'none' to variable\n");
+            return true;
+        }
     }
     if (hasRval && hasTy) {
         Type *staticTy = &decl->data.decl.staticTy->data.type;
         if (!is_type_equal(staticTy, decl->data.decl.resolvedTy)) {
             dx_err(ctx->src, at_node(ctx->src, decl),
-                   "Mismatched declaration types: declared type is '%s', expression type is '%s'\n",
-                   type_string(staticTy), type_string(decl->data.decl.resolvedTy));
+                   "Mismatched declaration types: declared type is '%s', value type is '%s'\n", type_string(staticTy),
+                   type_string(decl->data.decl.resolvedTy));
             return true;
         }
     } else if (hasTy) {
         decl->data.decl.resolvedTy = &decl->data.decl.staticTy->data.type;
+    }
+    if (hasRval) {
+        switch (decl->data.decl.rval->type) {
+            case NodeType::kIntLit: break;
+            default: todo("Implement declaration rvalue analyze\n");
+        }
     }
     return false;
 }
@@ -209,7 +271,7 @@ bool analyze_unit(Node *unit) {
             scope_exit(ctx.table);
             return true;
         }
-        scope_bind(ctx.table, decl->data.decl.lval->data.name.ident, decl);
+        scope_bind(ctx.table, decl);
         decl->data.decl.isDecl = true;
     }
 

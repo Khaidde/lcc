@@ -101,25 +101,18 @@ bool is_hexdigit(char c) { return is_number(c) || is_hexletter(c); }
 
 bool is_hexdigit_or_underscore(char c) { return is_hexdigit(c) || c == '_'; }
 
+// clang-format off
 constexpr TokenType kKeywords[]{
     TokenType::kElse,
     TokenType::kIf,
+    TokenType::kImport,
     TokenType::kRet,
     TokenType::kWhile,
 };
+// clang-format on
 constexpr size_t kNumKeywords = sizeof(kKeywords) / sizeof(TokenType);
 
-constexpr int strings_cmp(char const *a, char const *b) {
-    return (*a != *b || *a == '\0') ? *a - *b : strings_cmp(a + 1, b + 1);
-}
-
-constexpr bool is_sorted(size_t ndx) {
-    if (ndx >= kNumKeywords - 1) return true;
-    return strings_cmp(token_type_string(kKeywords[ndx]), token_type_string(kKeywords[ndx + 1])) <= 0 &&
-           is_sorted(ndx + 1);
-}
-
-static_assert(is_sorted(0), "Keywords must be listed alphabetically");
+ASSERT_ALPHABETIC(kNumKeywords, token_type_string(kKeywords[ndx]))
 
 Token *lex_keyword_or_ident(Lexer *l) {
     int ksi = 0;

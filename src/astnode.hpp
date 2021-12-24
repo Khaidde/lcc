@@ -10,13 +10,20 @@ struct Type;
 struct Node;
 
 enum class TypeKind {
+    kNone,
     kBase,
     kPtr,
     kFuncTy,
 };
 
+enum class BaseTypeKind {
+    u16,
+};
+
+const char *base_type_string(BaseTypeKind kind);
+
 struct BaseType {
-    LStringView name;
+    BaseTypeKind kind;
 };
 
 struct PtrType {
@@ -24,7 +31,7 @@ struct PtrType {
 };
 
 struct FuncType {
-    LList<Type *> argTys;
+    LList<Type *> paramTys;
     Type *retTy;
 };
 
@@ -36,6 +43,15 @@ struct Type {
         FuncType func;
     } data;
 };
+
+const char *type_string(Type *type);
+
+namespace builtin_type {
+
+extern Type none;
+extern Type u16;
+
+}  // namespace builtin_type
 
 enum class NodeType {
     kUnit,
@@ -55,6 +71,7 @@ enum class NodeType {
 
 struct UnitNode {
     LString *src;
+    LList<LStringView> imports;
     LList<Node *> decls;
 };
 
@@ -140,8 +157,6 @@ struct Node {
 };
 
 const char *node_type_string(NodeType type);
-
-const char *type_string(Type *type);
 
 void print_ast(Node *node);
 

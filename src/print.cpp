@@ -42,17 +42,18 @@ void strcat_color(char *dest, const char *src, const char *col) {
 
 }  // namespace
 
-#define DEFINE_PRINT(stream, name, color)                     \
-    do {                                                      \
-        va_list ap;                                           \
-        va_start(ap, format);                                 \
-        char buffer[100];                                     \
-        memcpy(buffer, header, kHeaderLen);                   \
-        strcat_color(buffer + kHeaderLen, #name ": ", color); \
-        size_t messageLen = strlen(buffer);                   \
-        vsprintf(buffer + messageLen, format, ap);            \
-        fprintf(stream, buffer);                              \
-        va_end(ap);                                           \
+#define DEFINE_PRINT(stream, name, color)                              \
+    do {                                                               \
+        va_list ap;                                                    \
+        va_start(ap, format);                                          \
+        fprintf(stream, "%s", header);                                 \
+        if (printUseColor) {                                           \
+            fprintf(stream, "%s%s: %s", color, name, kAnsiColorReset); \
+        } else {                                                       \
+            fprintf(stream, "%s: ", name);                             \
+        }                                                              \
+        vfprintf(stream, format, ap);                                  \
+        va_end(ap);                                                    \
     } while (0)
 
 void unreachable() {
@@ -68,11 +69,11 @@ void panic(const char *format, ...) {
     throw std::exception();
 }
 
-void err(const char *format, ...) { DEFINE_PRINT(stderr, err, kAnsiColorRed); }
+void err(const char *format, ...) { DEFINE_PRINT(stderr, "err", kAnsiColorRed); }
 
 void todo(const char *format, ...) {
 #ifndef NDEBUG
-    DEFINE_PRINT(stderr, TODO, kAnsiColorYellow);
+    DEFINE_PRINT(stderr, "TODO", kAnsiColorYellow);
 #else
     (void)format;
     (void)kAnsiColorYellow;
@@ -81,14 +82,14 @@ void todo(const char *format, ...) {
 
 void debug(const char *format, ...) {
 #ifndef NDEBUG
-    DEFINE_PRINT(stdout, debug, kAnsiColorCyan);
+    DEFINE_PRINT(stdout, "debug", kAnsiColorCyan);
 #else
     (void)format;
     (void)kAnsiColorCyan;
 #endif
 }
 
-void info(const char *format, ...) { DEFINE_PRINT(stdout, info, kAnsiColorReset); }
+void info(const char *format, ...) { DEFINE_PRINT(stdout, "info", kAnsiColorReset); }
 
 #undef DEFINE_PRINT
 

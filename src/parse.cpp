@@ -23,8 +23,6 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval);
 
 Node *parse_type(Lexer *l);
 
-constexpr u8 kLowPrecedence = 0;
-constexpr u8 kHighPrecedence = 0xFF;
 Node *parse_operand(Lexer *l);
 Node *parse_infix(Lexer *l, u8 prec, Node *left);
 Node *parse_expr(Lexer *l);
@@ -88,12 +86,32 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     return decl;
 }
 
+constexpr BaseTypeKind kBaseTypes[] = {BaseTypeKind::u16};
+
+constexpr size_t kNumBaseTypes = sizeof(kBaseTypes) / sizeof(BaseTypeKind);
+
 bool r_parse_type(Lexer *l, Type *dest) {
     Token *tkn = lex_peek(l);
     switch (tkn->type) {
         case TokenType::kIdent: {
             dest->kind = TypeKind::kBase;
-            dest->data.base.name = tkn->data.ident;
+            size_t i;
+            for (i = 0; i < kNumBaseTypes; i++) {
+                size_t k;
+                const char *baseType = base_type_string(kBaseTypes[i]);
+                for (k = 0; k < tkn->data.ident.len; k++) {
+                    if (tkn->data.ident.src[k] != baseType[k]) break;
+                }
+                if (k == tkn->data.ident.len) {
+                    dest->data.base.kind = kBaseTypes[i];
+                    break;
+                }
+            }
+            if (i == kNumBaseTypes) {
+                todo("Unknown type should be converted into a named type\n");
+                dx_err(l->src, at_token(tkn), "Unknown type\n");
+                return true;
+            }
             lex_next(l);  // next 'ident'
             break;
         }
@@ -107,7 +125,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
         }
         case TokenType::kLParen: {
             dest->kind = TypeKind::kFuncTy;
-            dest->data.func.argTys = {};
+            dest->data.func.paramTys = {};
             lex_next(l);  // next (
             for (;;) {
                 Token *tkn = lex_peek(l);
@@ -123,7 +141,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
 
                 Type *argTy = mem::malloc<Type>();
                 if (r_parse_type(l, argTy)) return true;
-                dest->data.func.argTys.add(argTy);
+                dest->data.func.paramTys.add(argTy);
 
                 if (check_peek(l, TokenType::kComma)) {
                     lex_next(l);  // next ,
@@ -140,7 +158,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
                 dest->data.func.retTy = mem::malloc<Type>();
                 if (r_parse_type(l, dest->data.func.retTy)) return true;
             } else {
-                dest->data.func.retTy = nullptr;
+                dest->data.func.retTy = &builtin_type::none;
             }
             break;
         }
@@ -160,6 +178,20 @@ Node *parse_type(Lexer *l) {
     return type;
 }
 
+constexpr u8 kLowPrecedence = 0;
+constexpr u8 kPrefixPrecedence = 3;
+constexpr u8 kPostfixPrecedence = 4;
+
+u8 get_precedence(TokenType op) {
+    switch (op) {
+        case TokenType::kLParen: return kPostfixPrecedence;  // Function call
+        case TokenType::kBitAnd: return 2;
+        case TokenType::kAdd:
+        case TokenType::kSubNeg: return 1;
+        default: return kLowPrecedence;
+    }
+}
+
 Node *parse_operand(Lexer *l) {
     Token *tkn = lex_peek(l);
     switch (tkn->type) {
@@ -171,7 +203,7 @@ Node *parse_operand(Lexer *l) {
             Node *prefix = create_node(l, NodeType::kPrefix);
             prefix->data.prefix.op = tkn->type;
             lex_next(l);  // next 'op'
-            prefix->data.prefix.inner = parse_infix(l, kHighPrecedence, parse_operand(l));
+            prefix->data.prefix.inner = parse_infix(l, kPrefixPrecedence, parse_operand(l));
             end_node(l, prefix);
             if (!prefix->data.prefix.inner) return nullptr;
             return prefix;
@@ -195,9 +227,8 @@ Node *parse_operand(Lexer *l) {
             lex_next(l);  // next (
             Node *expr = parse_expr(l);
             if (!expr) return nullptr;
-            align_node_start(expr, lparenStartI);
             if (!check_peek(l, TokenType::kRParen)) {
-                dx_err(l->src, at_node(l->src, expr), "Expected matching )\n");
+                dx_err(l->src, at_point(lparenStartI), "Expected matching )\n");
                 return nullptr;
             }
             lex_next(l);  // next )
@@ -273,16 +304,6 @@ Node *parse_operand(Lexer *l) {
     }
 }
 
-u8 get_precedence(TokenType op) {
-    switch (op) {
-        case TokenType::kLParen: return 3;  // Function call
-        case TokenType::kBitAnd: return 2;
-        case TokenType::kAdd:
-        case TokenType::kSubNeg: return 1;
-        default: return kLowPrecedence;
-    }
-}
-
 Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
     while (left) {
         TokenType op = lex_peek(l)->type;
@@ -308,6 +329,7 @@ Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
             }
             case TokenType::kLParen: {
                 Node *call = create_node(l, NodeType::kCall);
+                align_node_start(call, left->startI);
                 call->data.call.args = {};
                 call->data.call.callee = left;
                 lex_next(l);  // next (
@@ -337,6 +359,7 @@ Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
                         return nullptr;
                     }
                 }
+                end_node(l, call);
                 left = call;
                 break;
             }
@@ -462,22 +485,31 @@ Node *parse_block(Lexer *l) {
 Node *parse(Lexer *l) {
     Node *unit = create_node(l, NodeType::kUnit);
     unit->data.unit.src = l->src;
+    unit->data.unit.imports = {};
     unit->data.unit.decls = {};
     while (lex_peek(l)->type != TokenType::kEof) {
-        switch (lex_peek(l)->type) {
-            case TokenType::kErr: return nullptr;
-            default:
-                if (Node *declOrExpr = parse_decl_or_expr(l)) {
-                    if (declOrExpr->type == NodeType::kDecl) {
-                        unit->data.unit.decls.add(declOrExpr);
-                    } else {
-                        dx_err(l->src, at_node(l->src, declOrExpr), "%s expression cannot be in global scope\n",
-                               node_type_string(declOrExpr->type));
-                        return nullptr;
-                    }
-                } else {
-                    return nullptr;
-                }
+        Token *tkn = lex_peek(l);
+        if (tkn->type == TokenType::kErr) return nullptr;
+
+        if (tkn->type == TokenType::kImport) {
+            lex_next(l);  // next import
+            tkn = lex_peek(l);
+            if (tkn->type != TokenType::kIdent) {
+                dx_err(l->src, at_token(tkn), "Expected file name after import keyword\n");
+                return nullptr;
+            }
+            unit->data.unit.imports.add(tkn->data.ident);
+            lex_next(l);  // next ident
+        } else if (Node *declOrExpr = parse_decl_or_expr(l)) {
+            if (declOrExpr->type == NodeType::kDecl) {
+                unit->data.unit.decls.add(declOrExpr);
+            } else {
+                dx_err(l->src, at_node(l->src, declOrExpr), "%s expression cannot be in global scope\n",
+                       node_type_string(declOrExpr->type));
+                return nullptr;
+            }
+        } else {
+            return nullptr;
         }
     }
     end_node(l, unit);

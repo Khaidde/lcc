@@ -1,13 +1,19 @@
-d = 5
-a = b
-b = c
-c = a
-main = 2
+import lib
 
-// main: *(u16, u16) -> u16 = 5
+thing = :(a: u16) => 3
+func = :() -> u16 {}
+
+main = -func()
+main : (u16) = :(a: u16) {}
+
+test = add(3, 4)
+add = :(a: u16, b: u16) => a + b
+
+// recur : () -> u16 = recur()
+// test = add(a, b)
 
 /*
-main = :(argc: u32, argv = 3) -> u64 {
+main = :(argc: u32, argv: u32) -> u64 {
   asdf : u32 = 5 + this & 7
 
   if coolcond {

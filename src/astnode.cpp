@@ -4,6 +4,48 @@
 
 namespace lcc {
 
+namespace builtin_type {
+
+Type none = {TypeKind::kNone, {}};
+Type u16 = {TypeKind::kBase, {{BaseTypeKind::u16}}};
+
+}  // namespace builtin_type
+
+const char *base_type_string(BaseTypeKind kind) {
+    switch (kind) {
+        case BaseTypeKind::u16: return "u16";
+    }
+}
+
+// TODO: optimize this, particularly look at all string creations in function type
+const char *type_string(Type *type) {
+    switch (type->kind) {
+        case TypeKind::kNone: return "none";
+        case TypeKind::kBase: return base_type_string(type->data.base.kind);
+        case TypeKind::kPtr: {
+            LString res = lstr_create("*");
+            lstr_cat(res, type_string(type->data.ptr.inner));
+            return res.data;
+        }
+        case TypeKind::kFuncTy: {
+            LString res = lstr_create("(");
+            for (size_t i = 0; i < type->data.func.paramTys.size; i++) {
+                lstr_cat(res, type_string(type->data.func.paramTys.data[i]));
+                if (i + 1 < type->data.func.paramTys.size) {
+                    lstr_cat(res, ", ");
+                }
+            }
+            lstr_cat(res, ") -> ");
+            if (type->data.func.retTy) {
+                lstr_cat(res, type_string(type->data.func.retTy));
+            } else {
+                lstr_cat(res, "none");
+            }
+            return res.data;
+        }
+    }
+}
+
 namespace {
 
 void r_print_ast(Node *node, size_t depth) {
@@ -12,6 +54,9 @@ void r_print_ast(Node *node, size_t depth) {
     reset_print_color();
     switch (node->type) {
         case NodeType::kUnit:
+            for (size_t i = 0; i < node->data.unit.imports.size; i++) {
+                printf(" %s", lstr_create(node->data.unit.imports.data[i]).data);
+            }
             printf("\n");
             for (size_t i = 0; i < node->data.unit.decls.size; i++) {
                 r_print_ast(node->data.unit.decls.data[i], depth + 1);
@@ -137,34 +182,6 @@ const char *node_type_string(NodeType type) {
         case NodeType::kIf: return "If";
         case NodeType::kWhile: return "While";
         case NodeType::kRet: return "Ret";
-    }
-}
-
-// TODO: optimize this, particularly look at all string creations in function type
-const char *type_string(Type *type) {
-    switch (type->kind) {
-        case TypeKind::kBase: return lstr_create(type->data.base.name).data;
-        case TypeKind::kPtr: {
-            LString res = lstr_create("*");
-            lstr_cat(res, type_string(type->data.ptr.inner));
-            return res.data;
-        }
-        case TypeKind::kFuncTy: {
-            LString res = lstr_create("(");
-            for (size_t i = 0; i < type->data.func.argTys.size; i++) {
-                lstr_cat(res, type_string(type->data.func.argTys.data[i]));
-                if (i + 1 < type->data.func.argTys.size) {
-                    lstr_cat(res, ", ");
-                }
-            }
-            lstr_cat(res, ") -> ");
-            if (type->data.func.retTy) {
-                lstr_cat(res, type_string(type->data.func.retTy));
-            } else {
-                lstr_cat(res, "void");
-            }
-            return res.data;
-        }
     }
 }
 
