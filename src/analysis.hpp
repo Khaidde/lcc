@@ -6,7 +6,7 @@
 namespace lcc {
 
 // Return true if error occured
-bool analyze_unit(Node *unit);
+bool analyze_package(LList<FileInfo *> &files);
 
 };  // namespace lcc
 

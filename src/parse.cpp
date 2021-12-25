@@ -1,6 +1,7 @@
 #include "parse.hpp"
 
 #include "diagnostics.hpp"
+#include "file.hpp"
 
 namespace lcc {
 
@@ -214,6 +215,13 @@ Node *parse_operand(Lexer *l) {
             lex_next(l);  // next 'intlit'
             end_node(l, intLit);
             return intLit;
+        }
+        case TokenType::kStrLiteral: {
+            Node *strLit = create_node(l, NodeType::kStrLit);
+            strLit->data.strLit.strVal = tkn->data.str;
+            lex_next(l);  // next 'intlit'
+            end_node(l, strLit);
+            return strLit;
         }
         case TokenType::kIdent: {
             Node *name = create_node(l, NodeType::kName);
@@ -480,29 +488,31 @@ Node *parse_block(Lexer *l) {
     return block;
 }
 
-}  // namespace
-
-Node *parse(Lexer *l) {
+Node *parse_unit(Lexer *l) {
     Node *unit = create_node(l, NodeType::kUnit);
-    unit->data.unit.src = l->src;
-    unit->data.unit.imports = {};
-    unit->data.unit.decls = {};
+    unit->data.unit.imports = mem::malloc<LList<LStringView>>();
+    unit->data.unit.decls = mem::malloc<LList<Node *>>();
+    *unit->data.unit.imports = {};
+    *unit->data.unit.decls = {};
     while (lex_peek(l)->type != TokenType::kEof) {
         Token *tkn = lex_peek(l);
         if (tkn->type == TokenType::kErr) return nullptr;
 
         if (tkn->type == TokenType::kImport) {
             lex_next(l);  // next import
+
             tkn = lex_peek(l);
-            if (tkn->type != TokenType::kIdent) {
+            if (tkn->type == TokenType::kErr) return nullptr;
+            if (tkn->type != TokenType::kStrLiteral) {
                 dx_err(l->src, at_token(tkn), "Expected file name after import keyword\n");
                 return nullptr;
             }
-            unit->data.unit.imports.add(tkn->data.ident);
+            unit->data.unit.imports->add(tkn->data.ident);
             lex_next(l);  // next ident
         } else if (Node *declOrExpr = parse_decl_or_expr(l)) {
             if (declOrExpr->type == NodeType::kDecl) {
-                unit->data.unit.decls.add(declOrExpr);
+                declOrExpr->data.decl.isDecl = true;
+                unit->data.unit.decls->add(declOrExpr);
             } else {
                 dx_err(l->src, at_node(l->src, declOrExpr), "%s expression cannot be in global scope\n",
                        node_type_string(declOrExpr->type));
@@ -514,6 +524,28 @@ Node *parse(Lexer *l) {
     }
     end_node(l, unit);
     return unit;
+}
+
+}  // namespace
+
+Node *parse_source(LString *src) {
+    Lexer *lexer = lexer_init(src);
+    Node *unit = parse_unit(lexer);
+    mem::c_free(lexer);
+    if (!unit) return nullptr;
+    return unit;
+}
+
+FileInfo *parse_file(LString &filepath) {
+    FileInfo *fileinfo = mem::malloc<FileInfo>();
+    fileinfo->path = filepath.data;
+    if (file::read_file(fileinfo->src, filepath) != file::FileErrCode::kSuccess) {
+        err("Failed to read file: %s\n", filepath.data);
+        return nullptr;
+    }
+    fileinfo->unit = parse_source(&fileinfo->src);
+    if (!fileinfo->unit) return nullptr;
+    return fileinfo;
 }
 
 }  // namespace lcc

@@ -12,11 +12,11 @@ DxInfo at_node(LString *src, Node *node) {
     size_t depth = 0;
     size_t ndx = node->endI;
     while (ndx > node->startI) {
-        if (src->data[ndx] == '/' && ndx - 1 >= node->startI && src->data[ndx - 1] == '*') {
+        if (src->get(ndx) == '/' && ndx - 1 >= node->startI && src->get(ndx - 1) == '*') {
             depth++;
         }
-        if (depth == 0 && !is_whitespace(src->data[ndx])) break;
-        if (src->data[ndx] == '/' && ndx + 1 < src->size && src->data[ndx + 1] == '*') {
+        if (depth == 0 && !is_whitespace(src->get(ndx))) break;
+        if (src->get(ndx) == '/' && ndx + 1 < src->size && src->get(ndx + 1) == '*') {
             depth--;
         }
         ndx--;
@@ -24,7 +24,7 @@ DxInfo at_node(LString *src, Node *node) {
     size_t end = ndx;
     ndx = node->startI;
     while (ndx < end) {
-        if (src->data[ndx + 1] == '\r' || src->data[ndx + 1] == '\n') break;
+        if (src->get(ndx + 1) == '\r' || src->get(ndx + 1) == '\n') break;
         ndx++;
     }
     return {0, node->startI, ndx - node->startI + 1};
@@ -34,8 +34,8 @@ DxInfo at_eof(Lexer *l) {
     size_t ndx = l->src->size - 1;
     u32 line = l->line;
     while (ndx >= 0) {
-        if (!is_whitespace(l->src->data[ndx])) break;
-        if (l->src->data[ndx] == '\n') line--;
+        if (!is_whitespace(l->src->get(ndx))) break;
+        if (l->src->get(ndx) == '\n') line--;
         ndx--;
     }
     return {line, ndx + 1, 1};
@@ -78,7 +78,7 @@ void display_context(LString *src, DxInfo &dxinfo) {
     size_t ndx = 0;
     while (ndx < src->size && ndx < dxinfo.startI) {
         col++;
-        if (src->data[ndx] == '\n' && line != dxinfo.line) {
+        if (src->get(ndx) == '\n' && line != dxinfo.line) {
             push_back(lineQueue, src->data + ndx - col + 1, col - 2);
             col = 0;
             line++;
@@ -88,7 +88,7 @@ void display_context(LString *src, DxInfo &dxinfo) {
     size_t endCol = col;
     size_t endI = ndx;
     while (endI < src->size) {
-        if (src->data[endI] == '\n') {
+        if (src->get(endI) == '\n') {
             endCol--;
             endI--;
             break;

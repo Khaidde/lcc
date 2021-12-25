@@ -158,22 +158,25 @@ ErrCode command_line(int argc, char **argv) {
 }
 
 ErrCode compile(const char *path) {
-    LString output;
-    if (file::read_file(output, path) != file::FileErrCode::kSuccess) {
-        err("Failed to read file: %s\n", path);
-        return ErrCode::kFailure;
+    LList<LString> filenames = {};
+    file::get_files_same_dir(path, filenames);
+
+    LList<FileInfo *> files;
+    for (size_t i = 0; i < filenames.size; i++) {
+        info("Compiling %s ...\n", filenames.get(i).data);
+
+        FileInfo *file = parse_file(filenames.get(i));
+        if (!file) return ErrCode::kFailure;
+        files.add(file);
+    }
+    mem::c_free(filenames.data);
+
+    if (analyze_package(files)) return ErrCode::kFailure;
+
+    for (size_t i = 0; i < files.size; i++) {
+        print_ast(files.get(i)->unit);
     }
 
-    info("Compiling %s...\n", path);
-
-    Lexer *lexer = lexer_init(&output);
-
-    Node *unit = parse(lexer);
-    if (!unit) return ErrCode::kFailure;
-
-    if (analyze_unit(unit)) return ErrCode::kFailure;
-
-    print_ast(unit);
     return ErrCode::kSuccess;
 }
 

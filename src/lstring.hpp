@@ -18,7 +18,7 @@ struct LStringView {
 LString lstr_create(const char *str);
 LString lstr_create(LStringView &strView);
 
-const char *lstr_raw_view(LString &src, size_t off, size_t len);
+const char *lstr_raw_view(LString *src, size_t off, size_t len);
 
 size_t lstr_size(LString &dest);
 

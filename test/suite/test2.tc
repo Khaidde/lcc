@@ -1,4 +1,4 @@
-import lib
+import "lib"
 
 thing = :(a: u16) => 3
 func = :() -> u16 {}
@@ -8,6 +8,8 @@ main : (u16) = :(a: u16) {}
 
 test = add(3, 4)
 add = :(a: u16, b: u16) => a + b
+
+other = specialval
 
 // recur : () -> u16 = recur()
 // test = add(a, b)

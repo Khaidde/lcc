@@ -3,6 +3,7 @@
 #include <cstdarg>
 
 #include "diagnostics.hpp"
+#include "file.hpp"
 
 namespace lcc {
 
@@ -16,6 +17,15 @@ void end_token(Lexer *l) {
 Token *create_token(Lexer *l, TokenType type) {
     l->curToken.type = type;
     l->curToken.line = l->line;
+    l->curToken.startI = l->curI;
+    l->curToken.len = l->curLen;
+    end_token(l);
+    return &l->curToken;
+}
+
+Token *create_str_literal_token(Lexer *l) {
+    l->curToken.type = TokenType::kStrLiteral;
+    l->curToken.data.str = lstr_view(l->src->data, l->curI + 1, l->curLen - 2);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
     end_token(l);
@@ -130,7 +140,7 @@ Token *lex_keyword_or_ident(Lexer *l) {
 }
 
 Token *create_overflow_token(Lexer *l) {
-    dx_err(l->src, curr(l), "Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(*l->src, l->curI, l->curLen));
+    dx_err(l->src, curr(l), "Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(l->src, l->curI, l->curLen));
     return ret_err(l);
 }
 
@@ -219,10 +229,28 @@ Token *lex_integer(Lexer *l) {
     return lex_decimal(l, pos);
 }
 
+Token *lex_string(Lexer *l) {
+    l->curLen++;
+    while (char c = peek_char(l)) {
+        if (c == '"') {
+            l->curLen++;
+            return create_str_literal_token(l);
+        }
+        if (c == '\n') {
+            dx_err(l->src, curr(l), "Multiline string literal is not supported\n",
+                   lstr_raw_view(l->src, l->curI, l->curLen));
+            return ret_err(l);
+        }
+        l->curLen++;
+    }
+    dx_err(l->src, at_eof(l), "Could not find matching \" for string\n");
+    return ret_err(l);
+}
+
 }  // namespace
 
 Lexer *lexer_init(LString *src) {
-    Lexer *lex = mem::malloc<Lexer>();
+    Lexer *lex = mem::c_malloc<Lexer>();
     lex->src = src;
     lex->line = 1;
     lex->curI = 0;
@@ -280,6 +308,7 @@ Token *lex_next(Lexer *l) {
             } else {
                 return create_token(l, TokenType::kBitAnd);
             }
+        case '"': return lex_string(l);
         case '*':
             l->curLen++;
             if (peek_char(l) == '/') {

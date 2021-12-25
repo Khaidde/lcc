@@ -6,7 +6,9 @@
 
 namespace lcc {
 
-Node *parse(Lexer *l);
+Node *parse_source(LString *source);
+
+FileInfo *parse_file(LString &filepath);
 
 }  // namespace lcc
 

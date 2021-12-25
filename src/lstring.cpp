@@ -23,13 +23,13 @@ LString lstr_create(LStringView &strView) {
     lStr.init(strView.len + 1);
     strncpy(lStr.data, strView.src, strView.len);
     lStr.size = strView.len + 1;
-    lStr.data[strView.len] = '\0';
+    lStr.get(strView.len) = '\0';
     return lStr;
 }
 
-const char *lstr_raw_view(LString &src, size_t off, size_t len) {
+const char *lstr_raw_view(LString *src, size_t off, size_t len) {
     char *data = mem::c_malloc<char>(len + 1);
-    strncpy(data, src.data + off, len);
+    strncpy(data, src->data + off, len);
     data[len] = '\0';
     return data;
 }

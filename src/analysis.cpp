@@ -7,12 +7,17 @@ namespace lcc {
 
 namespace {
 
+struct TableEntry {
+    LString *src;
+    Node *decl;
+};
+
 // TODO: make kMaxScopeDepth a command line argument
 constexpr size_t kMaxScopeDepth = 8;
 
 struct SymbolTable {
     size_t size;
-    LMap<LStringView, Node *, lstr_hash, lstr_equal> scopes[kMaxScopeDepth];
+    LMap<LStringView, TableEntry, lstr_hash, lstr_equal> scopes[kMaxScopeDepth];
 };
 
 SymbolTable *scope_init() {
@@ -32,10 +37,11 @@ bool scope_enter(SymbolTable *table) {
 
 void scope_exit(SymbolTable *table) { mem::c_free(table->scopes[--table->size].table); }
 
-Node *scope_bind(SymbolTable *table, Node *decl) {
-    assert(decl->data.decl.lval->type == NodeType::kName && "Lvalue of decl should be a name");
-    if (Node **other = table->scopes[table->size - 1].try_put(decl->data.decl.lval->data.name.ident, decl)) {
-        return *other;
+TableEntry *scope_bind(SymbolTable *table, TableEntry &entry) {
+    assert(entry.decl->data.decl.lval->type == NodeType::kName && "Lvalue of decl should be a name");
+    if (TableEntry *other =
+            table->scopes[table->size - 1].try_put(entry.decl->data.decl.lval->data.name.ident, entry)) {
+        return other;
     } else {
         return nullptr;
     }
@@ -43,8 +49,8 @@ Node *scope_bind(SymbolTable *table, Node *decl) {
 
 Node *scope_lookup(SymbolTable *table, LStringView &symbol) {
     for (int i = table->size - 1; i >= 0; i--) {
-        if (Node **decl = table->scopes[i].get(symbol)) {
-            return *decl;
+        if (TableEntry *entry = table->scopes[i].get(symbol)) {
+            return entry->decl;
         }
     }
     return nullptr;
@@ -55,7 +61,7 @@ struct Context {
     LString *src;
 };
 
-bool analyze_decl(Context *ctx, Node *decl);
+bool resolve_decl_type(Context *ctx, Node *decl);
 
 bool is_type_equal(Type *t1, Type *t2) {
     if (!t1 && !t2) return true;
@@ -70,7 +76,7 @@ bool is_type_equal(Type *t1, Type *t2) {
             if (t1->data.func.paramTys.size != t2->data.func.paramTys.size) return false;
             if (!is_type_equal(t1->data.func.retTy, t2->data.func.retTy)) return false;
             for (size_t i = 0; i < t1->data.func.paramTys.size; i++) {
-                if (!is_type_equal(t1->data.func.paramTys.data[i], t2->data.func.paramTys.data[i])) {
+                if (!is_type_equal(t1->data.func.paramTys.get(i), t2->data.func.paramTys.get(i))) {
                     return false;
                 }
             }
@@ -131,7 +137,7 @@ Type *resolve_type(Context *ctx, Node *expr) {
         case NodeType::kIntLit: return &builtin_type::u16;
         case NodeType::kName:
             if (Node *decl = scope_lookup(ctx->table, expr->data.name.ident)) {
-                if (analyze_decl(ctx, decl)) return nullptr;
+                if (resolve_decl_type(ctx, decl)) return nullptr;
                 return decl->data.decl.resolvedTy;
             } else {
                 dx_err(ctx->src, at_node(ctx->src, expr), "No definition found for '%s'\n",
@@ -185,7 +191,7 @@ Type *resolve_type(Context *ctx, Node *expr) {
             funcTy->data.func.paramTys = {};
             if (expr->data.func.params.size) funcTy->data.func.paramTys.init(expr->data.func.params.size);
             for (size_t i = 0; i < expr->data.func.params.size; i++) {
-                Node *decl = expr->data.func.params.data[i];
+                Node *decl = expr->data.func.params.get(i);
                 if (!decl->data.decl.staticTy) {
                     dx_err(ctx->src, at_node(ctx->src, decl), "Function parameter must explicitly specify a type\n");
                     return nullptr;
@@ -201,7 +207,8 @@ Type *resolve_type(Context *ctx, Node *expr) {
                 // TODO: return type inference for single line function seems hairy
                 scope_enter(ctx->table);
                 for (size_t i = 0; i < expr->data.func.params.size; i++) {
-                    scope_bind(ctx->table, expr->data.func.params.data[i]);
+                    TableEntry entry = {ctx->src, expr->data.func.params.get(i)};
+                    scope_bind(ctx->table, entry);
                 }
                 funcTy->data.func.retTy = resolve_type(ctx, expr->data.func.body);
                 if (!funcTy->data.func.retTy) return nullptr;
@@ -214,7 +221,7 @@ Type *resolve_type(Context *ctx, Node *expr) {
     return nullptr;
 }
 
-bool analyze_decl(Context *ctx, Node *decl) {
+bool resolve_decl_type(Context *ctx, Node *decl) {
     assert(decl->type == NodeType::kDecl);
     if (decl->data.decl.resolvedTy) return false;
 
@@ -246,7 +253,13 @@ bool analyze_decl(Context *ctx, Node *decl) {
     } else if (hasTy) {
         decl->data.decl.resolvedTy = &decl->data.decl.staticTy->data.type;
     }
-    if (hasRval) {
+    return false;
+}
+
+bool analyze_decl(Context *ctx, Node *decl) {
+    if (resolve_decl_type(ctx, decl)) return true;
+
+    if (decl->data.decl.rval) {
         switch (decl->data.decl.rval->type) {
             case NodeType::kIntLit: break;
             default: todo("Implement declaration rvalue analyze\n");
@@ -257,40 +270,44 @@ bool analyze_decl(Context *ctx, Node *decl) {
 
 }  // namespace
 
-bool analyze_unit(Node *unit) {
-    Context ctx;
-    ctx.src = unit->data.unit.src;
-    ctx.table = scope_init();
-    scope_enter(ctx.table);
+bool analyze_package(LList<FileInfo *> &files) {
+    SymbolTable *globals = scope_init();
+    scope_enter(globals);
 
-    for (size_t i = 0; i < unit->data.unit.decls.size; i++) {
-        Node *decl = unit->data.unit.decls.data[i];
-        if (decl->data.decl.lval->type != NodeType::kName) {
-            dx_err(ctx.src, at_node(ctx.src, decl->data.decl.lval),
-                   "Must only declare variable names in global scope\n");
-            scope_exit(ctx.table);
-            return true;
-        }
-        scope_bind(ctx.table, decl);
-        decl->data.decl.isDecl = true;
-    }
+    for (size_t i = 0; i < files.size; i++) {
+        Node *unit = files.get(i)->unit;
+        LString *src = &files.get(i)->src;
 
-    LStringView main{"main", 4};
-    if (!scope_lookup(ctx.table, main)) {
-        err("Could not find main function in global scope\n");
-        scope_exit(ctx.table);
-        return true;
-    }
+        for (size_t k = 0; k < unit->data.unit.decls->size; k++) {
+            Node *decl = unit->data.unit.decls->get(k);
+            if (decl->data.decl.lval->type != NodeType::kName) {
+                dx_err(src, at_node(src, decl->data.decl.lval), "Must only declare variable names in global scope\n");
+                return true;
+            }
 
-    for (size_t i = 0; i < unit->data.unit.decls.size; i++) {
-        Node *decl = unit->data.unit.decls.data[i];
-        if (analyze_decl(&ctx, decl)) {
-            scope_exit(ctx.table);
-            return true;
+            TableEntry entry{src, decl};
+            if (TableEntry *other = scope_bind(globals, entry)) {
+                dx_err(src, at_node(src, decl->data.decl.lval), "Found duplicate declaration\n");
+                dx_err(other->src, at_node(other->src, other->decl->data.decl.lval),
+                       "Previous declaration found here\n");
+                return true;
+            }
         }
     }
 
-    scope_exit(ctx.table);
+    for (size_t i = 0; i < files.size; i++) {
+        Node *unit = files.get(i)->unit;
+        Context ctx{globals, &files.get(i)->src};
+
+        for (size_t i = 0; i < unit->data.unit.decls->size; i++) {
+            Node *decl = unit->data.unit.decls->get(i);
+            if (analyze_decl(&ctx, decl)) {
+                return true;
+            }
+        }
+    }
+
+    scope_exit(globals);
     return false;
 }
 

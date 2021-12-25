@@ -13,9 +13,10 @@ int main(int argc, char **argv) {
     try {
         (void)argc;
         (void)argv;
-        const char *args[2] = {"NULL", "C:/Users/berkx/Desktop/lcc/test/suite/test2.tc"};
-        if (command_line(2, const_cast<char **>(args)) == ErrCode::kFailure) {
-            // if (command_line(argc, argv) == ErrCode::kFailure) {
+        // const char *args[2] = {"NULL", "C:/Users/berkx/Desktop/lcc/test/suite/test2.tc"};
+        // const char *args[2] = {"NULL", "test2.tc"};
+        // if (command_line(2, const_cast<char **>(args)) == ErrCode::kFailure) {
+        if (command_line(argc, argv) == ErrCode::kFailure) {
             fprintf(stderr, "  Failed to compile\n");
             return EXIT_FAILURE;
         }

@@ -17,6 +17,7 @@ enum class TokenType {
     kBitAnd,
     kBitAndEq,
     kIntLiteral,
+    kStrLiteral,
     kIdent,
     kPtr,
     kDeref,
@@ -49,6 +50,7 @@ constexpr const char *token_type_string(TokenType type) {
         case TokenType::kBitAnd: return "&";
         case TokenType::kBitAndEq: return "&=";
         case TokenType::kIntLiteral: return "'integer'";
+        case TokenType::kStrLiteral: return "'string'";
         case TokenType::kIdent: return "'identifier'";
         case TokenType::kPtr: return "*";
         case TokenType::kDeref: return "@";

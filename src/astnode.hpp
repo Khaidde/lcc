@@ -53,11 +53,18 @@ extern Type u16;
 
 }  // namespace builtin_type
 
+struct FileInfo {
+    const char *path;
+    LString src;
+    Node *unit;
+};
+
 enum class NodeType {
     kUnit,
     kDecl,
     kType,
     kIntLit,
+    kStrLit,
     kName,
     kPrefix,
     kInfix,
@@ -70,9 +77,8 @@ enum class NodeType {
 };
 
 struct UnitNode {
-    LString *src;
-    LList<LStringView> imports;
-    LList<Node *> decls;
+    LList<LStringView> *imports;
+    LList<Node *> *decls;
 };
 
 struct DeclNode {
@@ -87,6 +93,10 @@ struct DeclNode {
 
 struct IntLitNode {
     u16 intVal;
+};
+
+struct StrLitNode {
+    LStringView strVal;
 };
 
 struct NameNode {
@@ -144,6 +154,7 @@ struct Node {
         DeclNode decl;
         Type type;
         IntLitNode intLit;
+        StrLitNode strLit;
         NameNode name;
         PrefixNode prefix;
         InfixNode infix;

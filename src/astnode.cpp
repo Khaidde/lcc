@@ -30,7 +30,7 @@ const char *type_string(Type *type) {
         case TypeKind::kFuncTy: {
             LString res = lstr_create("(");
             for (size_t i = 0; i < type->data.func.paramTys.size; i++) {
-                lstr_cat(res, type_string(type->data.func.paramTys.data[i]));
+                lstr_cat(res, type_string(type->data.func.paramTys.get(i)));
                 if (i + 1 < type->data.func.paramTys.size) {
                     lstr_cat(res, ", ");
                 }
@@ -54,12 +54,18 @@ void r_print_ast(Node *node, size_t depth) {
     reset_print_color();
     switch (node->type) {
         case NodeType::kUnit:
-            for (size_t i = 0; i < node->data.unit.imports.size; i++) {
-                printf(" %s", lstr_create(node->data.unit.imports.data[i]).data);
+            print_color(kAnsiColorMagenta);
+            if (node->data.unit.imports->size) {
+                printf(" import:");
             }
+            print_color(kAnsiColorBlue);
+            for (size_t i = 0; i < node->data.unit.imports->size; i++) {
+                printf(" '%s'", lstr_create(node->data.unit.imports->get(i)).data);
+            }
+            reset_print_color();
             printf("\n");
-            for (size_t i = 0; i < node->data.unit.decls.size; i++) {
-                r_print_ast(node->data.unit.decls.data[i], depth + 1);
+            for (size_t i = 0; i < node->data.unit.decls->size; i++) {
+                r_print_ast(node->data.unit.decls->get(i), depth + 1);
             }
             break;
         case NodeType::kDecl:
@@ -95,6 +101,11 @@ void r_print_ast(Node *node, size_t depth) {
             printf(" %d\n", node->data.intLit.intVal);
             reset_print_color();
             break;
+        case NodeType::kStrLit:
+            print_color(kAnsiColorBlue);
+            printf(" %s\n", lstr_create(node->data.strLit.strVal));
+            reset_print_color();
+            break;
         case NodeType::kName:
             print_color(kAnsiColorBlue);
             printf(" '%.*s'\n", node->data.name.ident.len, node->data.name.ident.src);
@@ -120,7 +131,7 @@ void r_print_ast(Node *node, size_t depth) {
 
             r_print_ast(node->data.call.callee, depth + 1);
             for (size_t i = 0; i < node->data.call.args.size; i++) {
-                r_print_ast(node->data.call.args.data[i], depth + 1);
+                r_print_ast(node->data.call.args.get(i), depth + 1);
             }
             break;
         case NodeType::kFunc:
@@ -132,7 +143,7 @@ void r_print_ast(Node *node, size_t depth) {
             printf("\n");
 
             for (size_t i = 0; i < node->data.func.params.size; i++) {
-                r_print_ast(node->data.func.params.data[i], depth + 1);
+                r_print_ast(node->data.func.params.get(i), depth + 1);
             }
             r_print_ast(node->data.func.body, depth + 1);
             break;
@@ -140,7 +151,7 @@ void r_print_ast(Node *node, size_t depth) {
             printf("\n");
 
             for (size_t i = 0; i < node->data.block.stmts.size; i++) {
-                r_print_ast(node->data.block.stmts.data[i], depth + 1);
+                r_print_ast(node->data.block.stmts.get(i), depth + 1);
             }
             break;
         case NodeType::kIf:
@@ -173,6 +184,7 @@ const char *node_type_string(NodeType type) {
         case NodeType::kDecl: return "Decl";
         case NodeType::kType: return "Type";
         case NodeType::kIntLit: return "IntLit";
+        case NodeType::kStrLit: return "StrLit";
         case NodeType::kName: return "Name";
         case NodeType::kPrefix: return "Prefix";
         case NodeType::kInfix: return "Infix";
