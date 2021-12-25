@@ -1,6 +1,7 @@
 #ifndef LCC_LEXER_HPP
 #define LCC_LEXER_HPP
 
+#include "file.hpp"
 #include "lstring.hpp"
 #include "util.hpp"
 
@@ -87,7 +88,7 @@ struct Token {
 };
 
 struct Lexer {
-    LString *src;
+    file::FileInfo *fileinfo;
 
     size_t line;
     size_t curI;
@@ -95,7 +96,7 @@ struct Lexer {
     Token curToken;
 };
 
-Lexer *lexer_init(LString *src);
+Lexer *lexer_init(LString &src);
 bool is_eof(Lexer *l);
 bool is_whitespace(char c);
 Token *lex_next(Lexer *l);

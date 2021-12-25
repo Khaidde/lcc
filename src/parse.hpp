@@ -2,13 +2,19 @@
 #define LCC_PARSE_HPP
 
 #include "astnode.hpp"
+#include "file.hpp"
 #include "lexer.hpp"
 
 namespace lcc {
 
-Node *parse_source(LString *source);
+struct FileUnit {
+    file::FileInfo *fileinfo;
+    Node *unit;
+};
 
-FileInfo *parse_file(LString &filepath);
+Node *parse_source(LString &source);
+
+FileUnit *parse_file(LString &filepath);
 
 }  // namespace lcc
 

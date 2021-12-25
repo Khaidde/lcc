@@ -14,6 +14,7 @@ constexpr const char *kAnsiColorYellow = "\x1b[33m";
 constexpr const char *kAnsiColorBlue = "\x1b[34m";
 constexpr const char *kAnsiColorMagenta = "\x1b[35m";
 constexpr const char *kAnsiColorCyan = "\x1b[36m";
+constexpr const char *kAnsiColorGrey = "\x1b[90m";
 constexpr const char *kAnsiColorReset = "\x1b[0m";
 
 extern bool printUseColor;

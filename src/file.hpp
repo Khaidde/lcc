@@ -6,11 +6,18 @@
 
 namespace lcc::file {
 
+struct FileInfo {
+    const char *path;
+    LString src;
+};
+
 enum class FileErrCode : unsigned char {
     kSuccess,
     kNotFound,
     kInternalError,
 };
+
+void replace_backslashes(char *dest, const char *src);
 
 FileErrCode read_file(LString &out, LString &path);
 

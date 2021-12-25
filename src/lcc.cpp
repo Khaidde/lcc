@@ -161,13 +161,15 @@ ErrCode compile(const char *path) {
     LList<LString> filenames = {};
     file::get_files_same_dir(path, filenames);
 
-    LList<FileInfo *> files;
+    char pathBuffer[200];
+    LList<FileUnit *> files;
     for (size_t i = 0; i < filenames.size; i++) {
-        info("Compiling %s ...\n", filenames.get(i).data);
+        file::replace_backslashes(pathBuffer, filenames.get(i).data);
+        info("Compiling %s ...\n", pathBuffer);
 
-        FileInfo *file = parse_file(filenames.get(i));
-        if (!file) return ErrCode::kFailure;
-        files.add(file);
+        FileUnit *fileunit = parse_file(filenames.get(i));
+        if (!fileunit) return ErrCode::kFailure;
+        files.add(fileunit);
     }
     mem::c_free(filenames.data);
 

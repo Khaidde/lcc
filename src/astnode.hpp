@@ -53,12 +53,6 @@ extern Type u16;
 
 }  // namespace builtin_type
 
-struct FileInfo {
-    const char *path;
-    LString src;
-    Node *unit;
-};
-
 enum class NodeType {
     kUnit,
     kDecl,

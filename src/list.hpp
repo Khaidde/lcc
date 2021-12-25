@@ -44,9 +44,7 @@ struct LList {
     }
 
     T &get(size_t i) {
-        if (0 > i || i >= size) {
-            assert(0 <= i && i < size);
-        }
+        assert(0 <= i && i < size);
         return data[i];
     }
 

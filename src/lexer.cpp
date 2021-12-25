@@ -25,7 +25,7 @@ Token *create_token(Lexer *l, TokenType type) {
 
 Token *create_str_literal_token(Lexer *l) {
     l->curToken.type = TokenType::kStrLiteral;
-    l->curToken.data.str = lstr_view(l->src->data, l->curI + 1, l->curLen - 2);
+    l->curToken.data.str = lstr_view(l->fileinfo->src.data, l->curI + 1, l->curLen - 2);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
     end_token(l);
@@ -34,7 +34,7 @@ Token *create_str_literal_token(Lexer *l) {
 
 Token *create_ident_token(Lexer *l) {
     l->curToken.type = TokenType::kIdent;
-    l->curToken.data.ident = lstr_view(l->src->data, l->curI, l->curLen);
+    l->curToken.data.ident = lstr_view(l->fileinfo->src.data, l->curI, l->curLen);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
     end_token(l);
@@ -56,12 +56,12 @@ Token *ret_err(Lexer *l) {
 
 char peek_char(Lexer *l) {
     if (is_eof(l)) return 0;
-    return l->src->get(l->curI + l->curLen);
+    return l->fileinfo->src.get(l->curI + l->curLen);
 }
 
 char peek_peek_char(Lexer *l) {
-    if (l->curI + l->curLen + 1 >= l->src->size) return 0;
-    return l->src->get(l->curI + l->curLen + 1);
+    if (l->curI + l->curLen + 1 >= l->fileinfo->src.size) return 0;
+    return l->fileinfo->src.get(l->curI + l->curLen + 1);
 }
 
 void lex_single_line_comment(Lexer *l) {
@@ -89,7 +89,7 @@ Token *lex_multi_line_comment(Lexer *l) {
             }
         }
     }
-    dx_err(l->src, at_eof(l), "Could not find matching */ for multiline comment\n");
+    dx_err(at_eof(l), "Could not find matching */ for multiline comment\n");
     return ret_err(l);
 }
 
@@ -140,7 +140,8 @@ Token *lex_keyword_or_ident(Lexer *l) {
 }
 
 Token *create_overflow_token(Lexer *l) {
-    dx_err(l->src, curr(l), "Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(l->src, l->curI, l->curLen));
+    dx_err(curr(l), "Int literal cannot fit in 16-bit value: %s\n",
+           lstr_raw_view(l->fileinfo->src, l->curI, l->curLen));
     return ret_err(l);
 }
 
@@ -154,7 +155,7 @@ Token *lex_binary(Lexer *l, bool pos) {
     if (!is_bindigit(peek_char(l))) {
         char digit = peek_char(l);
         l->curLen++;
-        dx_err(l->src, curr(l), "Invalid binary digit: %c\n", digit);
+        dx_err(curr(l), "Invalid binary digit: %c\n", digit);
         return ret_err(l);
     }
     u32 val = 0;
@@ -162,7 +163,7 @@ Token *lex_binary(Lexer *l, bool pos) {
         if (!is_bindigit(c) && is_number(c)) {
             char digit = peek_char(l);
             l->curLen++;
-            dx_err(l->src, curr(l), "Invalid binary digit: %c\n", digit);
+            dx_err(curr(l), "Invalid binary digit: %c\n", digit);
             return ret_err(l);
         }
         if (!c || !is_bindigit_or_underscore(c)) break;
@@ -179,7 +180,7 @@ Token *lex_hexadecimal(Lexer *l, bool pos) {
     if (!is_hexdigit(peek_char(l))) {
         char digit = peek_char(l);
         l->curLen++;
-        dx_err(l->src, curr(l), "Invalid hexadecimal digit: %c\n", digit);
+        dx_err(curr(l), "Invalid hexadecimal digit: %c\n", digit);
         return ret_err(l);
     }
     u32 val = 0;
@@ -237,21 +238,23 @@ Token *lex_string(Lexer *l) {
             return create_str_literal_token(l);
         }
         if (c == '\n') {
-            dx_err(l->src, curr(l), "Multiline string literal is not supported\n",
-                   lstr_raw_view(l->src, l->curI, l->curLen));
+            dx_err(curr(l), "Multiline string literal is not supported\n",
+                   lstr_raw_view(l->fileinfo->src, l->curI, l->curLen));
             return ret_err(l);
         }
         l->curLen++;
     }
-    dx_err(l->src, at_eof(l), "Could not find matching \" for string\n");
+    dx_err(at_eof(l), "Could not find matching \" for string\n");
     return ret_err(l);
 }
 
 }  // namespace
 
-Lexer *lexer_init(LString *src) {
+Lexer *lexer_init(LString &src) {
     Lexer *lex = mem::c_malloc<Lexer>();
-    lex->src = src;
+    lex->fileinfo = mem::malloc<file::FileInfo>();
+    lex->fileinfo->path = nullptr;
+    lex->fileinfo->src = src;
     lex->line = 1;
     lex->curI = 0;
     lex->curLen = 0;
@@ -261,7 +264,7 @@ Lexer *lexer_init(LString *src) {
 
 bool is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
-bool is_eof(Lexer *lex) { return lex->curI + lex->curLen >= lex->src->size; }
+bool is_eof(Lexer *lex) { return lex->curI + lex->curLen >= lex->fileinfo->src.size; }
 
 Token *lex_next(Lexer *l) {
     while (is_whitespace(peek_char(l))) {
@@ -281,7 +284,7 @@ Token *lex_next(Lexer *l) {
                     l->curLen++;
                     if (Token *rv = lex_multi_line_comment(l)) return rv;
                     return lex_next(l);
-                default: dx_err(l->src, curr(l), "Division not yet supported\n"); return ret_err(l);
+                default: dx_err(curr(l), "Division not yet supported\n"); return ret_err(l);
             }
         case '+':
             if (is_number(peek_peek_char(l))) return lex_integer(l);
@@ -313,7 +316,7 @@ Token *lex_next(Lexer *l) {
             l->curLen++;
             if (peek_char(l) == '/') {
                 l->curLen++;
-                dx_err(l->src, curr(l), "Unexpected */ with no matching /* for multiline comment\n", l->line, c);
+                dx_err(curr(l), "Unexpected */ with no matching /* for multiline comment\n", l->line, c);
                 return ret_err(l);
             } else {
                 return create_token(l, TokenType::kPtr);
@@ -338,7 +341,7 @@ Token *lex_next(Lexer *l) {
             if (is_letter_or_underscore(c)) return lex_keyword_or_ident(l);
             if (is_number(c)) return lex_integer(l);
 
-            dx_err(l->src, curr(l), "Unexpected character[%d]: '%c'\n", l->line, c);
+            dx_err(curr(l), "Unexpected character[%d]: '%c'\n", l->line, c);
             return ret_err(l);
     }
 }

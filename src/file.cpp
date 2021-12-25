@@ -14,6 +14,19 @@
 
 namespace lcc::file {
 
+void replace_backslashes(char *dest, const char *src) {
+    while (*src) {
+        if (*src == '\\') {
+            *dest = '/';
+        } else {
+            *dest = *src;
+        }
+        src++;
+        dest++;
+    }
+    *dest = '\0';
+}
+
 FileErrCode read_file(LString &out, LString &path) {
     FILE *file = fopen(path.data, "rb");
     if (!file) {

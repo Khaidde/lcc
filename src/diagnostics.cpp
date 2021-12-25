@@ -2,21 +2,32 @@
 
 namespace lcc {
 
-DxInfo at_point(size_t startI) { return {0, startI, 1}; }
+DxInfo curr(Lexer *l) { return {l->fileinfo, l->line, l->curI, l->curLen}; }
 
-DxInfo curr(Lexer *l) { return {l->line, l->curI, l->curLen}; }
+DxInfo at_eof(Lexer *l) {
+    size_t ndx = l->fileinfo->src.size - 1;
+    u32 line = l->line;
+    while (ndx >= 0) {
+        if (!is_whitespace(l->fileinfo->src.get(ndx))) break;
+        if (l->fileinfo->src.get(ndx) == '\n') line--;
+        ndx--;
+    }
+    return {l->fileinfo, line, ndx + 1, 1};
+}
 
-DxInfo at_token(Token *token) { return {token->line, token->startI, token->len}; }
+DxInfo at_point(file::FileInfo *fileinfo, size_t startI) { return {fileinfo, 0, startI, 1}; }
 
-DxInfo at_node(LString *src, Node *node) {
+DxInfo at_token(file::FileInfo *fileinfo, Token *token) { return {fileinfo, token->line, token->startI, token->len}; }
+
+DxInfo at_node(file::FileInfo *fileinfo, Node *node) {
     size_t depth = 0;
     size_t ndx = node->endI;
     while (ndx > node->startI) {
-        if (src->get(ndx) == '/' && ndx - 1 >= node->startI && src->get(ndx - 1) == '*') {
+        if (fileinfo->src.get(ndx) == '/' && ndx - 1 >= node->startI && fileinfo->src.get(ndx - 1) == '*') {
             depth++;
         }
-        if (depth == 0 && !is_whitespace(src->get(ndx))) break;
-        if (src->get(ndx) == '/' && ndx + 1 < src->size && src->get(ndx + 1) == '*') {
+        if (depth == 0 && !is_whitespace(fileinfo->src.get(ndx))) break;
+        if (fileinfo->src.get(ndx) == '/' && ndx + 1 < fileinfo->src.size && fileinfo->src.get(ndx + 1) == '*') {
             depth--;
         }
         ndx--;
@@ -24,21 +35,10 @@ DxInfo at_node(LString *src, Node *node) {
     size_t end = ndx;
     ndx = node->startI;
     while (ndx < end) {
-        if (src->get(ndx + 1) == '\r' || src->get(ndx + 1) == '\n') break;
+        if (fileinfo->src.get(ndx + 1) == '\r' || fileinfo->src.get(ndx + 1) == '\n') break;
         ndx++;
     }
-    return {0, node->startI, ndx - node->startI + 1};
-}
-
-DxInfo at_eof(Lexer *l) {
-    size_t ndx = l->src->size - 1;
-    u32 line = l->line;
-    while (ndx >= 0) {
-        if (!is_whitespace(l->src->get(ndx))) break;
-        if (l->src->get(ndx) == '\n') line--;
-        ndx--;
-    }
-    return {line, ndx + 1, 1};
+    return {fileinfo, 0, node->startI, ndx - node->startI + 1};
 }
 
 u8 numContextLines = 3;
@@ -70,16 +70,16 @@ LStringView *pop_first(LineQueue &queue) {
 
 }  // namespace
 
-void display_context(LString *src, DxInfo &dxinfo) {
+void display_context(DxInfo &dxinfo) {
     LineQueue lineQueue = init_line_queue();
 
     size_t line = 1;
     size_t col = 0;
     size_t ndx = 0;
-    while (ndx < src->size && ndx < dxinfo.startI) {
+    while (ndx < dxinfo.fileinfo->src.size && ndx < dxinfo.startI) {
         col++;
-        if (src->get(ndx) == '\n' && line != dxinfo.line) {
-            push_back(lineQueue, src->data + ndx - col + 1, col - 2);
+        if (dxinfo.fileinfo->src.get(ndx) == '\n' && line != dxinfo.line) {
+            push_back(lineQueue, dxinfo.fileinfo->src.data + ndx - col + 1, col - 2);
             col = 0;
             line++;
         }
@@ -87,8 +87,8 @@ void display_context(LString *src, DxInfo &dxinfo) {
     }
     size_t endCol = col;
     size_t endI = ndx;
-    while (endI < src->size) {
-        if (src->get(endI) == '\n') {
+    while (endI < dxinfo.fileinfo->src.size) {
+        if (dxinfo.fileinfo->src.get(endI) == '\n') {
             endCol--;
             endI--;
             break;
@@ -96,7 +96,7 @@ void display_context(LString *src, DxInfo &dxinfo) {
         endCol++;
         endI++;
     }
-    push_back(lineQueue, src->data + endI - endCol, endCol);
+    push_back(lineQueue, &dxinfo.fileinfo->src.get(endI - endCol), endCol);
 
     int ctxLine = line - numContextLines + 1;
     for (int i = 0; i < numContextLines; i++) {
@@ -111,6 +111,14 @@ void display_context(LString *src, DxInfo &dxinfo) {
     for (size_t i = 0; i < dxinfo.len; i++) printf("^");
     reset_print_color();
     printf("\n");
+
+    err("");
+
+    char pathBuffer[200];
+    file::replace_backslashes(pathBuffer, dxinfo.fileinfo->path);
+    print_color(kAnsiColorGrey);
+    printf("%s: ", pathBuffer);
+    reset_print_color();
 }
 
 }  // namespace lcc
