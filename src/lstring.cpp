@@ -2,13 +2,6 @@
 
 namespace lcc {
 
-template <>
-void LString::add(char &ch) {
-    ensure_capacity(size + 1);
-    data[size - 1] = ch;
-    data[size++] = '\0';
-}
-
 LString lstr_create(const char *str) {
     LString lStr;
     size_t cap = strlen(str) + 1;
@@ -41,6 +34,13 @@ void lstr_cat(LString &dest, const char *src) {
     dest.ensure_capacity(dest.size + len);
     strncat(dest.data, src, len);
     dest.size += len;
+}
+
+void lstr_cat(LString &dest, LStringView &view) {
+    dest.ensure_capacity(dest.size + view.len);
+    memcpy(&dest.data[dest.size - 1], view.src, view.len);
+    dest.size += view.len;
+    dest.data[dest.size - 1] = '\0';
 }
 
 LStringView lstr_view(const char *str, size_t off, size_t len) { return {str + off, len}; }

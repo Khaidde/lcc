@@ -25,7 +25,7 @@ Token *create_token(Lexer *l, TokenType type) {
 
 Token *create_str_literal_token(Lexer *l) {
     l->curToken.type = TokenType::kStrLiteral;
-    l->curToken.data.str = lstr_view(l->fileinfo->src.data, l->curI + 1, l->curLen - 2);
+    l->curToken.data.str = lstr_view(l->finfo->src.data, l->curI + 1, l->curLen - 2);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
     end_token(l);
@@ -34,7 +34,7 @@ Token *create_str_literal_token(Lexer *l) {
 
 Token *create_ident_token(Lexer *l) {
     l->curToken.type = TokenType::kIdent;
-    l->curToken.data.ident = lstr_view(l->fileinfo->src.data, l->curI, l->curLen);
+    l->curToken.data.ident = lstr_view(l->finfo->src.data, l->curI, l->curLen);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
     end_token(l);
@@ -56,12 +56,12 @@ Token *ret_err(Lexer *l) {
 
 char peek_char(Lexer *l) {
     if (is_eof(l)) return 0;
-    return l->fileinfo->src.get(l->curI + l->curLen);
+    return l->finfo->src.get(l->curI + l->curLen);
 }
 
 char peek_peek_char(Lexer *l) {
-    if (l->curI + l->curLen + 1 >= l->fileinfo->src.size) return 0;
-    return l->fileinfo->src.get(l->curI + l->curLen + 1);
+    if (l->curI + l->curLen + 1 >= l->finfo->src.size) return 0;
+    return l->finfo->src.get(l->curI + l->curLen + 1);
 }
 
 void lex_single_line_comment(Lexer *l) {
@@ -133,15 +133,14 @@ Token *lex_keyword_or_ident(Lexer *l) {
         while (kei >= ksi && token_type_string(kKeywords[kei])[l->curLen] > c) kei--;
         l->curLen++;
     }
-    if (ksi == kei) {
+    if (ksi == kei && token_type_string(kKeywords[ksi])[l->curLen] == '\0') {
         return create_token(l, kKeywords[kei]);
     }
     return create_ident_token(l);
 }
 
 Token *create_overflow_token(Lexer *l) {
-    dx_err(curr(l), "Int literal cannot fit in 16-bit value: %s\n",
-           lstr_raw_view(l->fileinfo->src, l->curI, l->curLen));
+    dx_err(curr(l), "Int literal cannot fit in 16-bit value: %s\n", lstr_raw_view(l->finfo->src, l->curI, l->curLen));
     return ret_err(l);
 }
 
@@ -239,7 +238,7 @@ Token *lex_string(Lexer *l) {
         }
         if (c == '\n') {
             dx_err(curr(l), "Multiline string literal is not supported\n",
-                   lstr_raw_view(l->fileinfo->src, l->curI, l->curLen));
+                   lstr_raw_view(l->finfo->src, l->curI, l->curLen));
             return ret_err(l);
         }
         l->curLen++;
@@ -250,21 +249,9 @@ Token *lex_string(Lexer *l) {
 
 }  // namespace
 
-Lexer *lexer_init(LString &src) {
-    Lexer *lex = mem::c_malloc<Lexer>();
-    lex->fileinfo = mem::malloc<file::FileInfo>();
-    lex->fileinfo->path = nullptr;
-    lex->fileinfo->src = src;
-    lex->line = 1;
-    lex->curI = 0;
-    lex->curLen = 0;
-    lex_next(lex);
-    return lex;
-}
-
 bool is_whitespace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 
-bool is_eof(Lexer *lex) { return lex->curI + lex->curLen >= lex->fileinfo->src.size; }
+bool is_eof(Lexer *lex) { return lex->curI + lex->curLen >= lex->finfo->src.size; }
 
 Token *lex_next(Lexer *l) {
     while (is_whitespace(peek_char(l))) {

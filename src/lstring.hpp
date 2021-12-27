@@ -24,6 +24,8 @@ size_t lstr_size(LString &dest);
 
 void lstr_cat(LString &dest, const char *src);
 
+void lstr_cat(LString &dest, LStringView &view);
+
 LStringView lstr_view(const char *str, size_t off, size_t len);
 
 u32 lstr_hash(LStringView &str);

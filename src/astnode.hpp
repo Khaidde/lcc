@@ -70,9 +70,14 @@ enum class NodeType {
     kRet,
 };
 
+struct FileUnit {
+    file::FileInfo *finfo;
+    Node *unit;
+};
+
 struct UnitNode {
-    LList<LStringView> *imports;
-    LList<Node *> *decls;
+    LList<LStringView> imports;
+    LList<Node *> decls;
 };
 
 struct DeclNode {
@@ -80,9 +85,9 @@ struct DeclNode {
     Node *staticTy;
     Node *rval;
 
+    Type *resolvedTy;
     bool isDecl;
     bool isChecked;
-    Type *resolvedTy;
 };
 
 struct IntLitNode {

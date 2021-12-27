@@ -14,83 +14,76 @@
 
 namespace lcc::file {
 
-void replace_backslashes(char *dest, const char *src) {
-    while (*src) {
-        if (*src == '\\') {
-            *dest = '/';
-        } else {
-            *dest = *src;
-        }
-        src++;
-        dest++;
-    }
-    *dest = '\0';
-}
-
-FileErrCode read_file(LString &out, LString &path) {
-    FILE *file = fopen(path.data, "rb");
+FileErrCode read_file(FileInfo **out, const char *filepath) {
+    FILE *file = fopen(filepath, "rb");
     if (!file) {
         return FileErrCode::kNotFound;
     }
-
-    out.init(0x100);
+    FileInfo *finfo = mem::malloc<FileInfo>();
+    finfo->path = filepath;
+    finfo->src.init(0x100);
     for (;;) {
-        size_t totalRead = fread(out.data + out.size, 1, out.capacity - out.size, file);
-        out.size += totalRead;
+        size_t totalRead = fread(finfo->src.data + finfo->src.size, 1, finfo->src.capacity - finfo->src.size, file);
+        finfo->src.size += totalRead;
 
-        if (out.size != out.capacity) {
-            FileErrCode rv = FileErrCode::kSuccess;
+        if (finfo->src.size != finfo->src.capacity) {
             if (!feof(file)) {
-                rv = FileErrCode::kInternalError;
+                *out = nullptr;
+                fclose(file);
+                return FileErrCode::kInternalError;
+            } else {
+                *out = finfo;
+                fclose(file);
+                return FileErrCode::kSuccess;
             }
-            fclose(file);
-            return rv;
         }
-        out.resize();
+        finfo->src.resize();
     }
 }
 
-namespace {
-
-FileErrCode get_abs_dir(const char *filename, char *outdir) {
-    // if (!GetFullPathName(filename, MAX_PATH, outdir, nullptr)) {
-    // return FileErrCode::kInternalError;
-    // }
-    strcpy(outdir, filename);
-
-    char *ptr = outdir;
-    char *lastSlash = nullptr;
-    while (*ptr) {
-        if (*ptr == '/' || *ptr == '\\') lastSlash = ptr;
-        ptr++;
-    }
-    *lastSlash = '\0';
-    return FileErrCode::kSuccess;
+bool is_regular_file(const char *path) {
+    struct stat pathStat;
+    stat(path, &pathStat);
+    return S_ISREG(pathStat.st_mode);
 }
 
-}  // namespace
+LString get_dir(const char *path) {
+    LString out;
+    out.init(MAX_PATH);
 
-FileErrCode get_files_same_dir(const char *filepath, LList<LString> &filenames) {
-    char dirname[MAX_PATH];
-    get_abs_dir(filepath, dirname);
-    // strcpy(dirname, filepath);
-    size_t dirnameLen = strlen(dirname);
+    char *optr = out.data;
+    char *sep = nullptr;
+    while (*path) {
+        if (*path == '/' || *path == '\\') sep = optr;
+        *(optr++) = *(path++);
+    }
+    if (sep) {
+        *sep = '\0';
+        out.size = (size_t)(sep - out.data + 1);
+    } else {
+        out.data[0] = '.';
+        out.data[1] = '\0';
+        out.size = 2;
+    }
+    return out;
+}
 
-    char fullpath[MAX_PATH];
-    if (DIR *dir = opendir(dirname)) {
+FileErrCode file_in_dir(LList<LString> &outfiles, LString &dirname) {
+    assert(dirname.size < MAX_PATH && "Directory path is too long");
+    char buf[MAX_PATH];
+    memcpy(buf, dirname.data, dirname.size - 1);
+    size_t dirlen = dirname.size - 1;
+    buf[dirlen] = '\0';
+
+    if (DIR *dir = opendir(buf)) {
+        buf[dirlen] = '/';
         dirent *ent;
         while ((ent = readdir(dir)) != nullptr) {
-            struct stat pathStat;
-
-            strcpy(fullpath, dirname);
-            fullpath[dirnameLen] = '\\';
-            memcpy(fullpath + dirnameLen + 1, ent->d_name, ent->d_namlen);
-            fullpath[dirnameLen + ent->d_namlen + 1] = '\0';
-            stat(fullpath, &pathStat);
-
-            if (!S_ISDIR(pathStat.st_mode)) {
-                LString filename = lstr_create(fullpath);
-                filenames.add(filename);
+            memcpy(&buf[dirlen + 1], ent->d_name, ent->d_namlen);
+            buf[dirlen + ent->d_namlen + 1] = '\0';
+            if (is_regular_file(buf)) {
+                LString filename = lstr_create(buf);
+                outfiles.add(filename);
             }
         }
         closedir(dir);

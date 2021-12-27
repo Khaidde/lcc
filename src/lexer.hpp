@@ -88,15 +88,14 @@ struct Token {
 };
 
 struct Lexer {
-    file::FileInfo *fileinfo;
+    file::FileInfo *finfo;
 
-    size_t line;
-    size_t curI;
-    size_t curLen;
+    size_t line{1};
+    size_t curI{0};
+    size_t curLen{0};
     Token curToken;
 };
 
-Lexer *lexer_init(LString &src);
 bool is_eof(Lexer *l);
 bool is_whitespace(char c);
 Token *lex_next(Lexer *l);

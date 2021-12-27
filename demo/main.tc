@@ -1,0 +1,8 @@
+import "math"
+
+val: u16 = area_sphere(3)
+a = area_sphere()
+
+main = :() {
+  val = area_sphere(3)
+}

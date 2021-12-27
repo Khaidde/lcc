@@ -58,7 +58,7 @@ int main() {
     LMap<int, int, int_hash, int_eq> map;
     map.init(50);
 
-    LList<int> keys = {};
+    LList<int> keys{};
 
     int factor = 1;
     for (int i = 0; i < 30; i++) {

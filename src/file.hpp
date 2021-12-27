@@ -17,11 +17,13 @@ enum class FileErrCode : unsigned char {
     kInternalError,
 };
 
-void replace_backslashes(char *dest, const char *src);
+FileErrCode read_file(FileInfo **out, const char *filepath);
 
-FileErrCode read_file(LString &out, LString &path);
+bool is_regular_file(const char *path);
 
-FileErrCode get_files_same_dir(const char *filepath, LList<LString> &filenames);
+LString get_dir(const char *path);
+
+FileErrCode file_in_dir(LList<LString> &outfiles, LString &dirname);
 
 };  // namespace lcc::file
 

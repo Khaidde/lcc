@@ -7,14 +7,7 @@
 
 namespace lcc {
 
-struct FileUnit {
-    file::FileInfo *fileinfo;
-    Node *unit;
-};
-
-Node *parse_source(LString &source);
-
-FileUnit *parse_file(LString &filepath);
+Node *parse_unit(Lexer *l);
 
 }  // namespace lcc
 

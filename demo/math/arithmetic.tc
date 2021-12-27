@@ -1,0 +1,16 @@
+import "math"
+
+add = :(a: u16, b: u16) => a + b
+
+mult = :(a: u16, b: u16) -> u16 {
+  res = b
+  while (a) {
+    --a
+    res = res + b
+  }
+  return res
+}
+
+square = :(n: u16) => mult(n, n)
+
+area_sphere = :(r: u16) => mult(square(r), pi)

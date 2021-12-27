@@ -55,17 +55,17 @@ void r_print_ast(Node *node, size_t depth) {
     switch (node->type) {
         case NodeType::kUnit:
             print_color(kAnsiColorMagenta);
-            if (node->data.unit.imports->size) {
+            if (node->data.unit.imports.size) {
                 printf(" import:");
             }
             print_color(kAnsiColorBlue);
-            for (size_t i = 0; i < node->data.unit.imports->size; i++) {
-                printf(" '%s'", lstr_create(node->data.unit.imports->get(i)).data);
+            for (size_t i = 0; i < node->data.unit.imports.size; i++) {
+                printf(" '%s'", lstr_create(node->data.unit.imports.get(i)).data);
             }
             reset_print_color();
             printf("\n");
-            for (size_t i = 0; i < node->data.unit.decls->size; i++) {
-                r_print_ast(node->data.unit.decls->get(i), depth + 1);
+            for (size_t i = 0; i < node->data.unit.decls.size; i++) {
+                r_print_ast(node->data.unit.decls.get(i), depth + 1);
             }
             break;
         case NodeType::kDecl:
