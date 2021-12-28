@@ -50,9 +50,9 @@ struct LMap {
     }
 
     Entry *table{nullptr};
-    size_t capacity;
-    size_t size;
-    size_t maxPSL;
+    size_t capacity{0};
+    size_t size{0};
+    size_t maxPSL{0};
 
 private:
     V *internal_try_put(K &key, V &val) {

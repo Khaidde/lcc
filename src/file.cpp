@@ -82,8 +82,13 @@ FileErrCode file_in_dir(LList<LString> &outfiles, LString &dirname) {
             memcpy(&buf[dirlen + 1], ent->d_name, ent->d_namlen);
             buf[dirlen + ent->d_namlen + 1] = '\0';
             if (is_regular_file(buf)) {
-                LString filename = lstr_create(buf);
-                outfiles.add(filename);
+                // TODO: Optimize this to remove backslashes through manually mem copying
+                char *data = buf;
+                while (*data) {
+                    if (*data == '\\') *data = '/';
+                    data++;
+                }
+                outfiles.add(lstr_create(buf));
             }
         }
         closedir(dir);

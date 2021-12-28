@@ -11,6 +11,7 @@
 #include "parse.hpp"
 #include "print.hpp"
 #include "scope.hpp"
+#include "types.hpp"
 #include "util.hpp"
 
 namespace lcc {
@@ -141,28 +142,6 @@ ErrCode parse_args(FlagParserInfo &finfo) {
     return ErrCode::kSuccess;
 }
 
-void replace_backslashes(LString &out) {
-    char *data = out.data;
-    while (*data) {
-        if (*data == '\\') {
-            *data = '/';
-        }
-        data++;
-    }
-}
-
-struct Package {
-    ScopeStack *scopes;
-    LList<FileUnit *> files;
-};
-
-using PackageMap = LMap<LStringView, Package, lstr_hash, lstr_equal>;
-
-struct ImportContext {
-    file::FileInfo *finfo;
-    LStringView importName;
-};
-
 }  // namespace
 
 ErrCode command_line(int argc, char **argv) {
@@ -186,14 +165,18 @@ ErrCode compile(const char *path) {
         return ErrCode::kFailure;
     }
 
-    PackageMap pkgMap;
-    pkgMap.init();
+    ExecutionContext ctx;
+    ctx.packageMap.init();
 
+    struct ImportContext {
+        ScopeStack *scopeStack;
+        FileUnit *fileUnit;
+        LStringView importName;
+    };
     LList<ImportContext> importStack{};
 
     LString rootDir = file::get_dir(path);
-    ImportContext rootDirCtx = {nullptr, {".", 1}};
-    importStack.add(rootDirCtx);
+    importStack.add({nullptr, nullptr, {".", 1}});
 
     LList<LString> filenames{};
     while (importStack.size) {
@@ -201,77 +184,93 @@ ErrCode compile(const char *path) {
         ImportContext importCtx = importStack.get(importStack.size - 1);
         importStack.size--;
 
-        // If import already resolved then go next
-        if (pkgMap.get(importCtx.importName)) continue;
-
-        // Find all files in the package if package directory exists
-        LString pkgDir = lstr_create(rootDir.data);
-        if (importCtx.importName.len != 1 || importCtx.importName.src[0] != '.') {
-            lstr_cat(pkgDir, "/");
-            lstr_cat(pkgDir, importCtx.importName);
-        }
-        if (file::file_in_dir(filenames, pkgDir) == file::FileErrCode::kNotFound) {
-            err("Could not find package '%s' imported by '%s'\n", lstr_create(importCtx.importName).data,
-                importCtx.finfo->path);
-            break;
-        }
-
-        Package pkg;
-        pkg.files = {};
-        pkg.scopes = scope_init();
-        scope_enter(pkg.scopes);
-        pkgMap.try_put(importCtx.importName, pkg);
-
-        for (size_t i = 0; i < filenames.size; i++) {
-            replace_backslashes(filenames.get(i));
-            info("Compiling %s ...\n", filenames.get(i).data);
-
-            // Parse file
-            file::FileInfo *fileinfo;
-            if (file::read_file(&fileinfo, filenames.get(i).data) != file::FileErrCode::kSuccess) {
-                err("Failed to read file: %s\n", filenames.get(i).data);
-                return ErrCode::kFailure;
+        // Check if package import is unresolved
+        if (!ctx.packageMap.get(importCtx.importName)) {
+            // Find all files in the package if package directory exists
+            LString pkgDir = lstr_create(rootDir.data);
+            if (importCtx.importName.len != 1 || importCtx.importName.src[0] != '.') {
+                lstr_cat(pkgDir, "/");
+                lstr_cat(pkgDir, importCtx.importName);
+            }
+            if (file::file_in_dir(filenames, pkgDir) == file::FileErrCode::kNotFound) {
+                err("Could not find package '%s' imported by '%s'\n", lstr_create(importCtx.importName).data,
+                    importCtx.fileUnit->finfo->path);
+                break;
             }
 
-            FileUnit *fileunit;
-            Node *unit;
-            {
-                Lexer lexer{};
-                lexer.finfo = fileinfo;
-                unit = parse_unit(&lexer);
+            Package pkg;
+            pkg.files = {};
+            pkg.scopeStack = scope_init();
+            scope_enter(pkg.scopeStack);
+            ctx.packageMap.try_put(importCtx.importName, pkg);
 
-                fileunit = mem::malloc<FileUnit>();
-                fileunit->finfo = fileinfo;
-                fileunit->unit = unit;
-
-                if (!fileunit->unit) return ErrCode::kFailure;
-                pkg.files.add(fileunit);
-            }
-
-            // Add all declarations in current file to package symbol table
-            for (size_t k = 0; k < unit->data.unit.decls.size; k++) {
-                TableEntry entry{fileinfo, unit->data.unit.decls.get(k)};
-
-                if (entry.decl->data.decl.lval->type != NodeType::kName) {
-                    dx_err(at_node(fileinfo, entry.decl->data.decl.lval),
-                           "Must only declare variable names in global scope\n");
+            for (size_t i = 0; i < filenames.size; i++) {
+                // Parse file
+                file::FileInfo *fileinfo;
+                Node *unit;
+                if (file::read_file(&fileinfo, filenames.get(i).data) != file::FileErrCode::kSuccess) {
+                    err("Failed to read file: %s\n", filenames.get(i).data);
                     return ErrCode::kFailure;
                 }
+                {
+                    Lexer lexer{};
+                    lexer.finfo = fileinfo;
+                    unit = parse_unit(&lexer);
+                }
+                pkg.files.add({fileinfo, unit, 0});
+                FileUnit *fileunit = &pkg.files.last();
 
-                if (TableEntry *other = scope_bind(pkg.scopes, entry)) {
-                    dx_err(at_node(entry.finfo, entry.decl->data.decl.lval), "Found duplicate declaration\n");
-                    dx_err(at_node(other->finfo, other->decl->data.decl.lval), "Previous declaration found here\n");
-                    return ErrCode::kFailure;
+                // Add all declarations in current file to package symbol table
+                for (size_t k = 0; k < unit->data.unit.decls.size; k++) {
+                    TableEntry entry{fileinfo, unit->data.unit.decls.get(k)};
+
+                    if (entry.decl->data.decl.lval->type != NodeType::kName) {
+                        dx_err(at_node(fileinfo, entry.decl->data.decl.lval),
+                               "Must only declare variable names in global scope\n");
+                        return ErrCode::kFailure;
+                    }
+
+                    if (TableEntry *other = scope_bind(pkg.scopeStack, entry)) {
+                        dx_err(at_node(entry.finfo, entry.decl->data.decl.lval), "Found duplicate declaration\n");
+                        dx_err(at_node(other->finfo, other->decl->data.decl.lval), "Previous declaration found here\n");
+                        return ErrCode::kFailure;
+                    }
+                }
+
+                // Add pending imports in current file to import stack
+                for (size_t k = 0; k < unit->data.unit.imports.size; k++) {
+                    if (!ctx.packageMap.get(unit->data.unit.imports.get(k))) {
+                        fileunit->numUnresolvedImports++;
+                        importStack.add({pkg.scopeStack, fileunit, unit->data.unit.imports.get(k)});
+                    }
                 }
             }
 
-            // Add pending imports in current file to import stack
-            for (size_t k = 0; k < unit->data.unit.imports.size; k++) {
-                ImportContext import{fileinfo, unit->data.unit.imports.get(k)};
-                if (!pkgMap.get(import.importName)) importStack.add(import);
-            }
+            for (size_t i = 0; i < pkg.files.size; i++) {
+                if (pkg.files.get(i).numUnresolvedImports == 0) {
+                    // TODO: duplicated code...
+                    info("Compiling %s ...\n", pkg.files.get(i).finfo->path);
 
-            print_ast(unit);
+                    // Semantic analysis of the file
+                    ctx.currScopeStack = pkg.scopeStack;
+                    ctx.currFile = &pkg.files.get(i);
+                    if (analyze_file(&ctx)) return ErrCode::kFailure;
+
+                    print_ast(ctx.currFile->unit);
+                }
+            }
+        }
+
+        if (importCtx.fileUnit && --importCtx.fileUnit->numUnresolvedImports == 0) {
+            // TODO: duplicated code...
+            info("Compiling %s ...\n", importCtx.fileUnit->finfo->path);
+
+            // Semantic analysis of the file
+            ctx.currScopeStack = importCtx.scopeStack;
+            ctx.currFile = importCtx.fileUnit;
+            if (analyze_file(&ctx)) return ErrCode::kFailure;
+
+            print_ast(ctx.currFile->unit);
         }
 
         filenames.size = 0;

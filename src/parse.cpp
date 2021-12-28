@@ -1,7 +1,6 @@
 #include "parse.hpp"
 
 #include "diagnostics.hpp"
-#include "file.hpp"
 #include "print.hpp"
 
 namespace lcc {

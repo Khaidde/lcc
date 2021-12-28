@@ -3,8 +3,11 @@
 
 #include "astnode.hpp"
 #include "hashmap.hpp"
+#include "types.hpp"
 
 namespace lcc {
+
+struct ExecutionContext;
 
 struct TableEntry {
     file::FileInfo *finfo;
@@ -26,7 +29,9 @@ void scope_exit(ScopeStack *stack);
 
 TableEntry *scope_bind(ScopeStack *stack, TableEntry &entry);
 
-Node *scope_lookup(ScopeStack *stack, LStringView &symbol);
+Node *scope_lookup_global(ScopeStack *stack, LStringView &symbol);
+
+Node *scope_lookup(ExecutionContext *ctx, LStringView &symbol);
 
 }  // namespace lcc
 

@@ -70,11 +70,6 @@ enum class NodeType {
     kRet,
 };
 
-struct FileUnit {
-    file::FileInfo *finfo;
-    Node *unit;
-};
-
 struct UnitNode {
     LList<LStringView> imports;
     LList<Node *> decls;

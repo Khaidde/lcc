@@ -3,11 +3,16 @@
 
 #include "list.hpp"
 #include "parse.hpp"
+#include "types.hpp"
 
 namespace lcc {
 
-// Return true if error occured
-bool analyze_package(LList<FileUnit *> &files);
+enum AnalysisResult {
+    kSuccess = 0,
+    kFailure = 1,
+};
+
+AnalysisResult analyze_file(ExecutionContext *ctx);
 
 };  // namespace lcc
 

@@ -1,7 +1,7 @@
 #ifndef LCC_HPP
 #define LCC_HPP
 
-#include "lstring.hpp"
+#include "astnode.hpp"
 
 namespace lcc {
 
@@ -10,9 +10,9 @@ enum class ErrCode : unsigned char {
     kFailure,
 };
 
-ErrCode command_line(int argc, char** argv);
+ErrCode command_line(int argc, char **argv);
 
-ErrCode compile(const char* path);
+ErrCode compile(const char *path);
 
 }  // namespace lcc
 

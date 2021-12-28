@@ -43,9 +43,19 @@ struct LList {
         data[size++] = item;
     }
 
+    void add(T &&item) {
+        ensure_capacity(size + 1);
+        data[size++] = item;
+    }
+
     T &get(size_t i) {
         assert(0 <= i && i < size);
         return data[i];
+    }
+
+    T &last() {
+        assert(size > 0);
+        return data[size - 1];
     }
 
     T *data{nullptr};

@@ -2,7 +2,6 @@
 #define LCC_PARSE_HPP
 
 #include "astnode.hpp"
-#include "file.hpp"
 #include "lexer.hpp"
 
 namespace lcc {
