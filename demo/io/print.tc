@@ -1,0 +1,8 @@
+import "."
+
+print = :(out: u16) {
+  // TODO: print
+}
+
+thing2: *u16 = 54
+thing = other

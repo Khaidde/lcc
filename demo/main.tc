@@ -1,7 +1,12 @@
 import "math"
+import "io"
 
 val: u16 = area_sphere(3)
 a = area_sphere()
+
+other = thing2
+
+test = thing
 
 main = :() {
   val = area_sphere(3)

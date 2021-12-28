@@ -45,9 +45,9 @@ DxInfo at_node(file::FileInfo *finfo, Node *node) {
     return {finfo, (size_t)-1, node->startI, ndx - node->startI + 1};
 }
 
-u8 numContextLines = 3;
+namespace {
 
-void dx_err(DxInfo dxinfo, const char *format, ...) {
+void dx_out(DxInfo &dxinfo) {
     LStringView *lines = mem::malloc<LStringView>(numContextLines);
     size_t back{0};
 
@@ -98,11 +98,35 @@ void dx_err(DxInfo dxinfo, const char *format, ...) {
         if (curLineNum >= 1) printf("  %4d %.*s\n", curLineNum, curLine.len, curLine.src);
     }
 
-    // Print error cursor and message
+    // Add spaces before the error cursor
     printf("%0*s", kHeaderLen + col, "");
+};
+}  // namespace
+
+u8 numContextLines = 3;
+
+void dx_err(DxInfo dxinfo, const char *format, ...) {
+    dx_out(dxinfo);
+
+    // Print error cursor and message
     print_color(kAnsiColorRed);
     for (size_t i = 0; i < dxinfo.len; i++) printf("^");
     printf(" error: ");
+    reset_print_color();
+
+    va_list(ap);
+    va_start(ap, format);
+    vprintf(format, ap);
+    va_end(ap);
+}
+
+void dx_note(DxInfo dxinfo, const char *format, ...) {
+    dx_out(dxinfo);
+
+    // Print error cursor and message
+    print_color(kAnsiColorGrey);
+    for (size_t i = 0; i < dxinfo.len; i++) printf("^");
+    printf(" note: ");
     reset_print_color();
 
     va_list(ap);

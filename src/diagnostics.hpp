@@ -28,6 +28,8 @@ extern u8 numContextLines;
 
 void dx_err(DxInfo dxinfo, const char *format, ...);
 
+void dx_note(DxInfo dxinfo, const char *format, ...);
+
 }  // namespace lcc
 
 #endif

@@ -1,4 +1,4 @@
-import "math"
+import "io"
 
 add = :(a: u16, b: u16) => a + b
 
@@ -14,3 +14,7 @@ mult = :(a: u16, b: u16) -> u16 {
 square = :(n: u16) => mult(n, n)
 
 area_sphere = :(r: u16) => mult(square(r), pi)
+
+display_area_sphere = :(r: u16) {
+  print(area_sphere(r))
+}

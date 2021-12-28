@@ -2,6 +2,7 @@
 #define LCC_HASHMAP_HPP
 
 #include "lstring.hpp"
+#include "print.hpp"
 #include "util.hpp"
 
 namespace lcc {
@@ -39,6 +40,7 @@ struct LMap {
         }
         return internal_try_put(key, val);
     }
+    V *try_put(K &key, V &&val) { return try_put(key, val); }
     V *get(K &key) {
         u32 ndx = hash_func(key) % capacity;
         for (size_t off = 0; off < maxPSL; off++) {

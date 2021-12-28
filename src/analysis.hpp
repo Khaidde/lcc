@@ -3,7 +3,7 @@
 
 #include "list.hpp"
 #include "parse.hpp"
-#include "types.hpp"
+#include "scope.hpp"
 
 namespace lcc {
 
@@ -12,7 +12,7 @@ enum AnalysisResult {
     kFailure = 1,
 };
 
-AnalysisResult analyze_file(ExecutionContext *ctx);
+AnalysisResult analyze_file(CompilationContext *cmp);
 
 };  // namespace lcc
 

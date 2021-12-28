@@ -4,13 +4,12 @@
 #include "file.hpp"
 #include "hashmap.hpp"
 #include "print.hpp"
-#include "scope.hpp"
 
 namespace lcc {
 
 namespace {
 
-bool resolve_decl_type(ExecutionContext *ctx, Node *decl);
+bool resolve_decl_type(CompilationContext *cmp, Node *decl);
 
 bool is_type_equal(Type *t1, Type *t2) {
     if (!t1 && !t2) return true;
@@ -39,12 +38,12 @@ Type *create_type(TypeKind kind) {
     return type;
 }
 
-Type *resolve_type(ExecutionContext *ctx, Node *expr);
+Type *resolve_type(CompilationContext *cmp, Node *expr);
 
-Type *resolve_prefix(ExecutionContext *ctx, Node *prefix) {
+Type *resolve_prefix(CompilationContext *cmp, Node *prefix) {
     assert(prefix->type == NodeType::kPrefix);
 
-    Type *inner = resolve_type(ctx, prefix->data.prefix.inner);
+    Type *inner = resolve_type(cmp, prefix->data.prefix.inner);
     if (!inner) return nullptr;
 
     switch (prefix->data.prefix.op) {
@@ -52,14 +51,14 @@ Type *resolve_prefix(ExecutionContext *ctx, Node *prefix) {
             if (is_type_equal(inner, &builtin_type::u16)) {
                 return inner;
             }
-            dx_err(at_node(ctx->currFile->finfo, prefix->data.prefix.inner),
+            dx_err(at_node(cmp->ctx.currFile->finfo, prefix->data.prefix.inner),
                    "Argument type of negation '-' expected be an integer: Found '%s'\n", type_string(inner));
             return nullptr;
         case TokenType::kSubSub:
             if (inner->kind == TypeKind::kPtr || is_type_equal(inner, &builtin_type::u16)) {
                 return inner;
             }
-            dx_err(at_node(ctx->currFile->finfo, prefix->data.prefix.inner),
+            dx_err(at_node(cmp->ctx.currFile->finfo, prefix->data.prefix.inner),
                    "Argument type of pre-increment '--' expected to be numeric: Found '%s'\n", type_string(inner));
             return nullptr;
         case TokenType::kPtr: {
@@ -71,7 +70,7 @@ Type *resolve_prefix(ExecutionContext *ctx, Node *prefix) {
             if (inner->kind == TypeKind::kPtr) {
                 return inner->data.ptr.inner;
             }
-            dx_err(at_node(ctx->currFile->finfo, prefix->data.prefix.inner),
+            dx_err(at_node(cmp->ctx.currFile->finfo, prefix->data.prefix.inner),
                    "Argument type of deref '@' expected to be a pointer: Found '%s'\n", type_string(inner));
             return nullptr;
         default:
@@ -81,55 +80,63 @@ Type *resolve_prefix(ExecutionContext *ctx, Node *prefix) {
     return nullptr;
 }
 
-Type *resolve_type(ExecutionContext *ctx, Node *expr) {
+Type *resolve_type(CompilationContext *cmp, Node *expr) {
     switch (expr->type) {
         case NodeType::kIntLit: return &builtin_type::u16;
         case NodeType::kName:
-            if (Node *decl = scope_lookup(ctx, expr->data.name.ident)) {
-                if (resolve_decl_type(ctx, decl)) return nullptr;
+            if (Node *decl = scope_lookup(&cmp->ctx, expr->data.name.ident)) {
+                if (resolve_decl_type(cmp, decl)) return nullptr;
                 return decl->data.decl.resolvedTy;
+            } else if (DeclContext *declCtx = scope_lookup_global(cmp, expr->data.name.ident)) {
+                Context save = cmp->ctx;
+                cmp->ctx.currPackage = declCtx->package;
+                cmp->ctx.currFile = declCtx->fileUnit;
+                cmp->ctx.currScopeStack = scope_init();
+                if (resolve_decl_type(cmp, declCtx->decl)) return nullptr;
+                cmp->ctx = save;
+                return declCtx->decl->data.decl.resolvedTy;
             } else {
-                dx_err(at_node(ctx->currFile->finfo, expr), "No definition found for '%s'\n",
+                dx_err(at_node(cmp->ctx.currFile->finfo, expr), "No definition found for '%s'\n",
                        lstr_create(expr->data.name.ident).data);
                 return nullptr;
             }
-        case NodeType::kPrefix: return resolve_prefix(ctx, expr);
+        case NodeType::kPrefix: return resolve_prefix(cmp, expr);
         case NodeType::kInfix: {
-            Type *ltype = resolve_type(ctx, expr->data.infix.left);
+            Type *ltype = resolve_type(cmp, expr->data.infix.left);
             if (!ltype) return nullptr;
             if (ltype->kind == TypeKind::kNone) {
-                dx_err(at_node(ctx->currFile->finfo, expr->data.infix.left),
+                dx_err(at_node(cmp->ctx.currFile->finfo, expr->data.infix.left),
                        "Cannot use expression of type 'none' in infix operation\n");
                 return nullptr;
             }
 
-            Type *rtype = resolve_type(ctx, expr->data.infix.right);
+            Type *rtype = resolve_type(cmp, expr->data.infix.right);
             if (!rtype) return nullptr;
             if (rtype->kind == TypeKind::kNone) {
-                dx_err(at_node(ctx->currFile->finfo, expr->data.infix.right),
+                dx_err(at_node(cmp->ctx.currFile->finfo, expr->data.infix.right),
                        "Cannot use expression of type 'none' in infix operation\n");
                 return nullptr;
             }
 
             if (!is_type_equal(ltype, rtype)) {
-                dx_err(at_node(ctx->currFile->finfo, expr),
+                dx_err(at_node(cmp->ctx.currFile->finfo, expr),
                        "Mismatched infix operator types: left is '%s', right is '%s'\n", type_string(ltype),
                        type_string(rtype));
                 return nullptr;
             }
 
             if (!is_type_equal(ltype, &builtin_type::u16)) {
-                dx_err(at_node(ctx->currFile->finfo, expr),
+                dx_err(at_node(cmp->ctx.currFile->finfo, expr),
                        "Argument types of infix operator expected to be integers: Found '%s'\n", type_string(ltype));
                 return nullptr;
             }
             return ltype;
         }
         case NodeType::kCall: {
-            Type *ctype = resolve_type(ctx, expr->data.call.callee);
+            Type *ctype = resolve_type(cmp, expr->data.call.callee);
             if (!ctype) return nullptr;
             if (ctype->kind != TypeKind::kFuncTy) {
-                dx_err(at_node(ctx->currFile->finfo, expr->data.call.callee),
+                dx_err(at_node(cmp->ctx.currFile->finfo, expr->data.call.callee),
                        "Expression has type '%s' which cannot be called\n", type_string(ctype));
                 return nullptr;
             }
@@ -142,7 +149,8 @@ Type *resolve_type(ExecutionContext *ctx, Node *expr) {
             for (size_t i = 0; i < expr->data.func.params.size; i++) {
                 Node *decl = expr->data.func.params.get(i);
                 if (!decl->data.decl.staticTy) {
-                    dx_err(at_node(ctx->currFile->finfo, decl), "Function parameter must explicitly specify a type\n");
+                    dx_err(at_node(cmp->ctx.currFile->finfo, decl),
+                           "Function parameter must explicitly specify a type\n");
                     return nullptr;
                 }
                 decl->data.decl.resolvedTy = &decl->data.decl.staticTy->data.type;
@@ -154,14 +162,13 @@ Type *resolve_type(ExecutionContext *ctx, Node *expr) {
                 funcTy->data.func.retTy = &builtin_type::none;
             } else {
                 // TODO: return type inference for single line function seems hairy
-                scope_enter(ctx->currScopeStack);
+                scope_enter(cmp->ctx.currScopeStack);
                 for (size_t i = 0; i < expr->data.func.params.size; i++) {
-                    TableEntry entry{ctx->currFile->finfo, expr->data.func.params.get(i)};
-                    scope_bind(ctx->currScopeStack, entry);
+                    scope_bind(cmp->ctx.currScopeStack, expr->data.func.params.get(i));
                 }
-                funcTy->data.func.retTy = resolve_type(ctx, expr->data.func.body);
+                funcTy->data.func.retTy = resolve_type(cmp, expr->data.func.body);
                 if (!funcTy->data.func.retTy) return nullptr;
-                scope_exit(ctx->currScopeStack);
+                scope_exit(cmp->ctx.currScopeStack);
             }
             return funcTy;
         }
@@ -170,12 +177,12 @@ Type *resolve_type(ExecutionContext *ctx, Node *expr) {
     return nullptr;
 }
 
-bool resolve_decl_type(ExecutionContext *ctx, Node *decl) {
+bool resolve_decl_type(CompilationContext *cmp, Node *decl) {
     assert(decl->type == NodeType::kDecl);
     if (decl->data.decl.resolvedTy) return false;
 
     if (decl->data.decl.isChecked) {
-        dx_err(at_node(ctx->currFile->finfo, decl), "Detected circular dependency\n");
+        dx_err(at_node(cmp->ctx.currFile->finfo, decl), "Detected circular dependency\n");
         return true;
     }
     decl->data.decl.isChecked = true;
@@ -183,10 +190,10 @@ bool resolve_decl_type(ExecutionContext *ctx, Node *decl) {
     bool hasTy = decl->data.decl.staticTy;
     bool hasRval = decl->data.decl.rval;
     if (hasRval) {
-        decl->data.decl.resolvedTy = resolve_type(ctx, decl->data.decl.rval);
+        decl->data.decl.resolvedTy = resolve_type(cmp, decl->data.decl.rval);
         if (!decl->data.decl.resolvedTy) return true;
         if (decl->data.decl.resolvedTy->kind == TypeKind::kNone) {
-            dx_err(at_node(ctx->currFile->finfo, decl->data.decl.rval),
+            dx_err(at_node(cmp->ctx.currFile->finfo, decl->data.decl.rval),
                    "Cannot assign value of type 'none' to variable\n");
             return true;
         }
@@ -194,7 +201,7 @@ bool resolve_decl_type(ExecutionContext *ctx, Node *decl) {
     if (hasRval && hasTy) {
         Type *staticTy = &decl->data.decl.staticTy->data.type;
         if (!is_type_equal(staticTy, decl->data.decl.resolvedTy)) {
-            dx_err(at_node(ctx->currFile->finfo, decl),
+            dx_err(at_node(cmp->ctx.currFile->finfo, decl),
                    "Mismatched declaration types: declared type is '%s', value type is '%s'\n", type_string(staticTy),
                    type_string(decl->data.decl.resolvedTy));
             return true;
@@ -205,8 +212,8 @@ bool resolve_decl_type(ExecutionContext *ctx, Node *decl) {
     return false;
 }
 
-bool analyze_decl(ExecutionContext *ctx, Node *decl) {
-    if (resolve_decl_type(ctx, decl)) return true;
+bool analyze_decl(CompilationContext *cmp, Node *decl) {
+    if (resolve_decl_type(cmp, decl)) return true;
 
     if (decl->data.decl.rval) {
         switch (decl->data.decl.rval->type) {
@@ -219,11 +226,11 @@ bool analyze_decl(ExecutionContext *ctx, Node *decl) {
 
 }  // namespace
 
-AnalysisResult analyze_file(ExecutionContext *ctx) {
-    Node *unit = ctx->currFile->unit;
+AnalysisResult analyze_file(CompilationContext *cmp) {
+    Node *unit = cmp->ctx.currFile->unit;
     for (size_t i = 0; i < unit->data.unit.decls.size; i++) {
         Node *decl = unit->data.unit.decls.get(i);
-        if (analyze_decl(ctx, decl)) return AnalysisResult::kFailure;
+        if (analyze_decl(cmp, decl)) return AnalysisResult::kFailure;
     }
     return AnalysisResult::kSuccess;
 }
