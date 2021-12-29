@@ -3,12 +3,8 @@
 #include <cstring>
 
 #include "analysis.hpp"
-#include "diagnostics.hpp"
-#include "file.hpp"
-#include "lexer.hpp"
-#include "list.hpp"
+#include "diagnostic.hpp"
 #include "lstring.hpp"
-#include "parse.hpp"
 #include "print.hpp"
 #include "scope.hpp"
 #include "util.hpp"
@@ -171,17 +167,16 @@ ErrCode compile(const char *path) {
 
     LStringView root{".", 1};
     Package *pkg = *cmp.packageMap.get(root);
-    FileUnit &fileUnit = pkg->files.get(0);
+    File *file = pkg->files.get(0);
 
-    info("Compiling %s ...\n", fileUnit.finfo->path);
+    info("Compiling %s ...\n", file->finfo->path);
 
     // Semantic analysis of the file
-    cmp.ctx.currPackage = pkg;
-    cmp.ctx.currFile = &fileUnit;
-    cmp.ctx.currScopeStack = scope_init();
+    cmp.ctx.package = pkg;
+    cmp.ctx.file = file;
     if (analyze_file(&cmp)) return ErrCode::kFailure;
 
-    print_ast(fileUnit.unit);
+    print_ast(file->unit);
 
     return ErrCode::kSuccess;
 }

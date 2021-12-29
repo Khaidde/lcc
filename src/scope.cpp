@@ -1,6 +1,6 @@
 #include "scope.hpp"
 
-#include "diagnostics.hpp"
+#include "diagnostic.hpp"
 #include "parse.hpp"
 #include "print.hpp"
 
@@ -20,34 +20,27 @@ void scope_enter(ScopeStack *stack) {
 void scope_exit(ScopeStack *stack) { mem::c_free(stack->scopes[--stack->size].table); }
 
 Node *scope_bind(ScopeStack *stack, Node *decl) {
-    assert(decl->data.decl.lval->type == NodeType::kName && "Lvalue of decl should be a name");
-    if (Node **other = stack->scopes[stack->size - 1].try_put(decl->data.decl.lval->data.name.ident, decl)) {
+    assert(decl->decl.lval->kind == NodeKind::kName && "Lvalue of decl should be a name");
+    if (Node **other = stack->scopes[stack->size - 1].try_put(decl->decl.lval->name.ident, decl)) {
         return *other;
     } else {
         return nullptr;
     }
 }
 
-Node *scope_lookup(Context *ctx, LStringView &symbol) {
-    for (int i = ctx->currScopeStack->size - 1; i >= 0; i--) {
-        if (Node **decl = ctx->currScopeStack->scopes[i].get(symbol)) {
-            return *decl;
-        }
-    }
-    return nullptr;
-}
-
-DeclContext *scope_lookup_global(CompilationContext *cmp, LStringView &symbol) {
-    if (DeclContext *declCtx = cmp->ctx.currPackage->globalDecls.get(symbol)) {
-        return declCtx;
-    }
-    for (size_t i = 0; i < cmp->ctx.currFile->unit->data.unit.imports.size; i++) {
-        LStringView &importName = cmp->ctx.currFile->unit->data.unit.imports.get(i);
-        if (Package **pkg = cmp->packageMap.get(importName)) {
-            if (DeclContext *ctx = (*pkg)->globalDecls.get(symbol)) {
-                return ctx;
+Node *decl_lookup(CompilationContext *cmp, LStringView &symbol) {
+    if (cmp->ctx.file->scopeStack) {
+        for (int i = cmp->ctx.file->scopeStack->size - 1; i >= 0; i--) {
+            if (Node **decl = cmp->ctx.file->scopeStack->scopes[i].get(symbol)) {
+                return *decl;
             }
         }
+    }
+    if (Node **globalDecl = cmp->ctx.package->globalDecls.get(symbol)) {
+        return *globalDecl;
+    }
+    if (Node **import = cmp->ctx.file->unit->unit.imports.get(symbol)) {
+        return *import;
     }
     return nullptr;
 }
@@ -57,12 +50,12 @@ CompilationContext resolve_packages(const char *mainFile) {
     cmp.packageMap.init();
 
     struct ImportContext {
-        FileUnit *fileUnit;
+        File *file;
         LStringView importName;
     };
     LList<ImportContext> importStack{};
 
-    LString rootDir = file::get_dir(mainFile);
+    LString rootDir = file::split_dir(mainFile);
     importStack.add({nullptr, {".", 1}});
 
     LList<LString> filenames{};
@@ -79,11 +72,12 @@ CompilationContext resolve_packages(const char *mainFile) {
                 lstr_cat(pkgDir, importCtx.importName);
             }
             if (file::file_in_dir(filenames, pkgDir) == file::FileErrCode::kNotFound) {
-                err("Could not find package '%s' imported by '%s'\n", lstr_create(importCtx.importName).data,
-                    importCtx.fileUnit->finfo->path);
-                break;
+                err("Could not find package '%s' imported by '%s'\n", lstr_raw_str(importCtx.importName),
+                    importCtx.file->finfo->path);
+                cmp.isPackageResolutionSuccesful = false;
+                return cmp;
             }
-            info("Importing package '%s' ...\n", lstr_create(importCtx.importName).data);
+            info("Importing package '%s' ...\n", lstr_raw_str(importCtx.importName));
 
             Package *pkg = mem::malloc<Package>();
             pkg->files = {};
@@ -92,52 +86,75 @@ CompilationContext resolve_packages(const char *mainFile) {
 
             for (size_t i = 0; i < filenames.size; i++) {
                 // Parse file
-                file::FileInfo *fileinfo;
+                file::FileInfo *finfo;
                 Node *unit;
-                if (file::read_file(&fileinfo, filenames.get(i).data) != file::FileErrCode::kSuccess) {
+                if (file::read_file(&finfo, filenames.get(i).data) != file::FileErrCode::kSuccess) {
                     err("Failed to read file: %s\n", filenames.get(i).data);
                     cmp.isPackageResolutionSuccesful = false;
                     return cmp;
                 }
                 {
                     Lexer lexer{};
-                    lexer.finfo = fileinfo;
+                    lexer.finfo = finfo;
                     unit = parse_unit(&lexer);
                     if (!unit) {
                         cmp.isPackageResolutionSuccesful = false;
                         return cmp;
                     }
                 }
-                pkg->files.add({fileinfo, unit});
-
-                FileUnit *fileUnit = &pkg->files.last();
+                File *file = mem::malloc<File>();
+                file->finfo = finfo;
+                file->unit = unit;
+                file->scopeStack = nullptr;
+                pkg->files.add(file);
 
                 // Add all declarations in current file to package symbol table
-                for (size_t k = 0; k < unit->data.unit.decls.size; k++) {
-                    DeclContext declCtx{pkg, fileUnit, unit->data.unit.decls.get(k)};
+                for (size_t k = 0; k < unit->unit.decls.size; k++) {
+                    Node *decl = unit->unit.decls.get(k);
+                    decl->decl.package = pkg;
+                    decl->decl.file = file;
 
-                    if (declCtx.decl->data.decl.lval->type != NodeType::kName) {
-                        dx_err(at_node(fileinfo, declCtx.decl->data.decl.lval),
-                               "Must only declare variable names in global scope\n");
+                    if (decl->decl.lval->kind != NodeKind::kName) {
+                        dx_err(at_node(finfo, decl->decl.lval), "Must only declare variable names in global scope\n");
                         cmp.isPackageResolutionSuccesful = false;
                         return cmp;
                     }
 
-                    LStringView &declName = declCtx.decl->data.decl.lval->data.name.ident;
-                    if (DeclContext *other = pkg->globalDecls.try_put(declName, declCtx)) {
-                        dx_err(at_node(fileUnit->finfo, declCtx.decl->data.decl.lval), "Found duplicate declaration\n");
-                        dx_err(at_node(other->fileUnit->finfo, other->decl->data.decl.lval),
-                               "Previous declaration found here\n");
+                    LStringView &declName = decl->decl.lval->name.ident;
+                    if (Node **other = pkg->globalDecls.try_put(declName, decl)) {
+                        dx_err(at_node(file->finfo, decl->decl.lval), "Duplicate declaration\n");
+                        dx_note(at_node((*other)->decl.file->finfo, (*other)->decl.lval),
+                                "Previous declaration here\n");
                         cmp.isPackageResolutionSuccesful = false;
                         return cmp;
                     }
                 }
 
                 // Add pending imports in current file to import stack
-                for (size_t k = 0; k < unit->data.unit.imports.size; k++) {
-                    LStringView &importName = unit->data.unit.imports.get(k);
-                    if (!cmp.packageMap.get(importName)) {
-                        importStack.add({fileUnit, importName});
+                for (size_t k = 0; k < unit->unit.imports.capacity; k++) {
+                    if (unit->unit.imports.table[k].psl) {
+                        Node *import = unit->unit.imports.table[k].val;
+                        if (!cmp.packageMap.get(import->import.package)) {
+                            importStack.add({file, import->import.package});
+                        }
+                    }
+                }
+            }
+
+            // Make sure package aliases don't confict with declaration names
+            for (size_t i = 0; i < pkg->files.size; i++) {
+                File *file = pkg->files.get(i);
+                Node *unit = file->unit;
+                for (size_t k = 0; k < unit->unit.imports.capacity; k++) {
+                    if (unit->unit.imports.table[k].psl) {
+                        Node *import = unit->unit.imports.table[k].val;
+                        if (Node **decl = pkg->globalDecls.get(import->import.alias)) {
+                            dx_err(at_node(file->finfo, import),
+                                   "Import alias cannot have the same name as a declaration\n");
+                            dx_note(at_node((*decl)->decl.file->finfo, *decl), "Declaration found here\n");
+                            cmp.isPackageResolutionSuccesful = false;
+                            return cmp;
+                        }
                     }
                 }
             }

@@ -1,8 +1,6 @@
 #ifndef LCC_ANALYSIS_HPP
 #define LCC_ANALYSIS_HPP
 
-#include "list.hpp"
-#include "parse.hpp"
 #include "scope.hpp"
 
 namespace lcc {

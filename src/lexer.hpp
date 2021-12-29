@@ -3,7 +3,6 @@
 
 #include "file.hpp"
 #include "lstring.hpp"
-#include "util.hpp"
 
 namespace lcc {
 
@@ -22,6 +21,7 @@ enum class TokenType {
     kIdent,
     kPtr,
     kDeref,
+    kDot,
     kLParen,
     kRParen,
     kLCurl,
@@ -55,6 +55,7 @@ constexpr const char *token_type_string(TokenType type) {
         case TokenType::kIdent: return "'identifier'";
         case TokenType::kPtr: return "*";
         case TokenType::kDeref: return "@";
+        case TokenType::kDot: return ".";
         case TokenType::kLParen: return "(";
         case TokenType::kRParen: return ")";
         case TokenType::kLCurl: return "{";
@@ -84,7 +85,7 @@ struct Token {
 
         LStringView str;
         LStringView ident;
-    } data;
+    };
 };
 
 struct Lexer {

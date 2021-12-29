@@ -1,8 +1,6 @@
 #ifndef LCC_HPP
 #define LCC_HPP
 
-#include "astnode.hpp"
-
 namespace lcc {
 
 enum class ErrCode : unsigned char {

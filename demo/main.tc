@@ -1,13 +1,20 @@
 import "math"
+
 import "io"
 
-val: u16 = area_sphere(3)
-a = area_sphere()
+// val: u16 = math.area_sphere(3)
 
-other = thing2
+// thing: string = "lol"
 
-test = thing
+// test = runtime_func("lolk")
+// test = test2
+
+// cool = io.print(3)
+// other = runt
 
 main = :() {
-  val = area_sphere(3)
+
+  // val = area_sphere(3)
+  // print(val)
+  io.print(val)
 }

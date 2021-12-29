@@ -2,8 +2,8 @@
 
 #include <cstdarg>
 
-#include "diagnostics.hpp"
-#include "file.hpp"
+#include "diagnostic.hpp"
+#include "util.hpp"
 
 namespace lcc {
 
@@ -25,7 +25,7 @@ Token *create_token(Lexer *l, TokenType type) {
 
 Token *create_str_literal_token(Lexer *l) {
     l->curToken.type = TokenType::kStrLiteral;
-    l->curToken.data.str = lstr_view(l->finfo->src.data, l->curI + 1, l->curLen - 2);
+    l->curToken.str = lstr_view(l->finfo->src.data, l->curI + 1, l->curLen - 2);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
     end_token(l);
@@ -34,7 +34,7 @@ Token *create_str_literal_token(Lexer *l) {
 
 Token *create_ident_token(Lexer *l) {
     l->curToken.type = TokenType::kIdent;
-    l->curToken.data.ident = lstr_view(l->finfo->src.data, l->curI, l->curLen);
+    l->curToken.ident = lstr_view(l->finfo->src.data, l->curI, l->curLen);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
     end_token(l);
@@ -146,7 +146,7 @@ Token *create_overflow_token(Lexer *l) {
 
 Token *lex_create_int_literal(Lexer *l, bool pos, u32 val) {
     Token *rv = create_token(l, TokenType::kIntLiteral);
-    rv->data.intVal = pos ? (u16)val : -(u16)val;
+    rv->intVal = pos ? (u16)val : -(u16)val;
     return rv;
 }
 
@@ -309,6 +309,7 @@ Token *lex_next(Lexer *l) {
                 return create_token(l, TokenType::kPtr);
             }
         case '@': l->curLen++; return create_token(l, TokenType::kDeref);
+        case '.': l->curLen++; return create_token(l, TokenType::kDot);
         case '(': l->curLen++; return create_token(l, TokenType::kLParen);
         case ')': l->curLen++; return create_token(l, TokenType::kRParen);
         case '{': l->curLen++; return create_token(l, TokenType::kLCurl);

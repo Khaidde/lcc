@@ -1,6 +1,6 @@
 #include "parse.hpp"
 
-#include "diagnostics.hpp"
+#include "diagnostic.hpp"
 #include "print.hpp"
 
 namespace lcc {
@@ -9,10 +9,10 @@ namespace {
 
 bool check_peek(Lexer *l, TokenType type) { return lex_peek(l)->type == type; }
 
-Node *create_node(Lexer *l, NodeType type) {
+Node *create_node(Lexer *l, NodeKind kind) {
     Node *node = mem::malloc<Node>();
     node->startI = lex_peek(l)->startI;
-    node->type = type;
+    node->kind = kind;
     return node;
 }
 
@@ -30,6 +30,44 @@ Node *parse_expr(Lexer *l);
 
 Node *parse_block(Lexer *l);
 
+Node *parse_import(Lexer *l) {
+    Node *import = create_node(l, NodeKind::kImport);
+    lex_next(l);  // next import
+
+    bool hasAlias = true;
+
+    Token *tkn = lex_peek(l);
+    if (tkn->type == TokenType::kErr) return nullptr;
+    if (tkn->type == TokenType::kIdent) {
+        import->import.alias = tkn->ident;
+
+        lex_next(l);  // next ident
+        if (check_peek(l, TokenType::kErr)) return nullptr;
+        tkn = lex_peek(l);
+    } else {
+        hasAlias = false;
+    }
+    if (!check_peek(l, TokenType::kStrLiteral)) {
+        dx_err(at_token(l->finfo, tkn), "Expected package path after import keyword\n");
+        return nullptr;
+    }
+    import->import.package = tkn->str;
+    if (!hasAlias) {
+        // Get rightmost directory to use as alias
+        const char *optr = &tkn->str.src[tkn->str.len - 1];
+        while (optr >= tkn->str.src) {
+            if (*optr == '/' || *optr == '\\') break;
+            optr--;
+        }
+        if (optr != tkn->str.src || *optr == '/' || *optr == '\\') optr++;
+        import->import.alias = {optr, tkn->str.len - (size_t)(optr - tkn->str.src)};
+    }
+
+    lex_next(l);  // next string
+    end_node(l, import);
+    return import;
+}
+
 Node *parse_decl_or_expr(Lexer *l) {
     Node *expr = parse_expr(l);
     if (!expr) return nullptr;
@@ -41,44 +79,46 @@ Node *parse_decl_or_expr(Lexer *l) {
 }
 
 Node *parse_decl_from_lval(Lexer *l, Node *lval) {
-    switch (lval->type) {
-        case NodeType::kName: break;
-        case NodeType::kPrefix:
-            if (lval->data.prefix.op == TokenType::kDeref) break;
+    switch (lval->kind) {
+        case NodeKind::kName: break;
+        case NodeKind::kPrefix:
+            if (lval->prefix.op == TokenType::kDeref) break;
             dx_err(at_node(l->finfo, lval), "%s prefix expression not allowed as lvalue\n",
-                   token_type_string(lval->data.prefix.op));
+                   token_type_string(lval->prefix.op));
             return nullptr;
         default:
-            dx_err(at_node(l->finfo, lval), "%s expression not allowed as lvalue\n", node_type_string(lval->type));
+            dx_err(at_node(l->finfo, lval), "%s expression not allowed as lvalue\n", node_kind_string(lval->kind));
             return nullptr;
     }
 
-    Node *decl = create_node(l, NodeType::kDecl);
+    Node *decl = create_node(l, NodeKind::kDecl);
     align_node_start(decl, lval->startI);
-    decl->data.decl.lval = lval;
-    decl->data.decl.isDecl = false;
-    decl->data.decl.isChecked = false;
-    decl->data.decl.resolvedTy = nullptr;
+    decl->decl.lval = lval;
+    decl->decl.resolvedTy = nullptr;
+    decl->decl.isDecl = false;
+    decl->decl.isChecked = false;
+    decl->decl.package = nullptr;
+    decl->decl.file = nullptr;
 
     bool hasType = check_peek(l, TokenType::kColon);
     if (hasType) {
-        decl->data.decl.isDecl = true;
+        decl->decl.isDecl = true;
         lex_next(l);  // next :
-        decl->data.decl.staticTy = parse_type(l);
-        if (!decl->data.decl.staticTy) return nullptr;
+        decl->decl.staticTy = parse_type(l);
+        if (!decl->decl.staticTy) return nullptr;
     } else {
-        decl->data.decl.staticTy = nullptr;
+        decl->decl.staticTy = nullptr;
     }
     bool hasAssignment = check_peek(l, TokenType::kAssign);
     if (hasAssignment) {
         lex_next(l);  // next =
-        decl->data.decl.rval = parse_expr(l);
-        if (!decl->data.decl.rval) return nullptr;
+        decl->decl.rval = parse_expr(l);
+        if (!decl->decl.rval) return nullptr;
     } else {
-        decl->data.decl.rval = nullptr;
+        decl->decl.rval = nullptr;
     }
     if (!hasType && !hasAssignment) {
-        dx_err(at_node(l->finfo, decl->data.decl.lval), "Declaration must have either a type or value\n");
+        dx_err(at_node(l->finfo, decl->decl.lval), "Declaration must have either a type or value\n");
         return nullptr;
     }
 
@@ -86,7 +126,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     return decl;
 }
 
-constexpr BaseTypeKind kBaseTypes[] = {BaseTypeKind::u16};
+constexpr BaseTypeKind kBaseTypes[] = {BaseTypeKind::u16, BaseTypeKind::string};
 
 constexpr size_t kNumBaseTypes = sizeof(kBaseTypes) / sizeof(BaseTypeKind);
 
@@ -99,11 +139,11 @@ bool r_parse_type(Lexer *l, Type *dest) {
             for (i = 0; i < kNumBaseTypes; i++) {
                 size_t k;
                 const char *baseType = base_type_string(kBaseTypes[i]);
-                for (k = 0; k < tkn->data.ident.len; k++) {
-                    if (tkn->data.ident.src[k] != baseType[k]) break;
+                for (k = 0; k < tkn->ident.len; k++) {
+                    if (tkn->ident.src[k] != baseType[k]) break;
                 }
-                if (k == tkn->data.ident.len) {
-                    dest->data.base.kind = kBaseTypes[i];
+                if (k == tkn->ident.len) {
+                    dest->base.kind = kBaseTypes[i];
                     break;
                 }
             }
@@ -119,13 +159,13 @@ bool r_parse_type(Lexer *l, Type *dest) {
             dest->kind = TypeKind::kPtr;
             lex_next(l);  // next *
 
-            dest->data.ptr.inner = mem::malloc<Type>();
-            if (r_parse_type(l, dest->data.ptr.inner)) return true;
+            dest->ptr.inner = mem::malloc<Type>();
+            if (r_parse_type(l, dest->ptr.inner)) return true;
             break;
         }
         case TokenType::kLParen: {
             dest->kind = TypeKind::kFuncTy;
-            dest->data.func.paramTys = {};
+            dest->func.paramTys = {};
             lex_next(l);  // next (
             for (;;) {
                 Token *tkn = lex_peek(l);
@@ -141,7 +181,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
 
                 Type *argTy = mem::malloc<Type>();
                 if (r_parse_type(l, argTy)) return true;
-                dest->data.func.paramTys.add(argTy);
+                dest->func.paramTys.add(argTy);
 
                 if (check_peek(l, TokenType::kComma)) {
                     lex_next(l);  // next ,
@@ -155,10 +195,10 @@ bool r_parse_type(Lexer *l, Type *dest) {
             }
             if (check_peek(l, TokenType::kArrow)) {
                 lex_next(l);  // next ->
-                dest->data.func.retTy = mem::malloc<Type>();
-                if (r_parse_type(l, dest->data.func.retTy)) return true;
+                dest->func.retTy = mem::malloc<Type>();
+                if (r_parse_type(l, dest->func.retTy)) return true;
             } else {
-                dest->data.func.retTy = &builtin_type::none;
+                dest->func.retTy = &builtin_type::none;
             }
             break;
         }
@@ -172,8 +212,8 @@ bool r_parse_type(Lexer *l, Type *dest) {
 }
 
 Node *parse_type(Lexer *l) {
-    Node *type = create_node(l, NodeType::kType);
-    if (r_parse_type(l, &type->data.type)) return nullptr;
+    Node *type = create_node(l, NodeKind::kType);
+    if (r_parse_type(l, &type->type)) return nullptr;
     end_node(l, type);
     return type;
 }
@@ -186,7 +226,8 @@ u8 get_precedence(TokenType op) {
     switch (op) {
         case TokenType::kAddAdd:
         case TokenType::kSubSub:
-        case TokenType::kLParen: return kPostfixPrecedence;  // Function call
+        case TokenType::kLParen:  // Function call
+        case TokenType::kDot: return kPostfixPrecedence;
         case TokenType::kBitAnd: return 2;
         case TokenType::kAdd:
         case TokenType::kSubNeg: return 1;
@@ -202,31 +243,31 @@ Node *parse_operand(Lexer *l) {
         case TokenType::kSubSub:
         case TokenType::kPtr:
         case TokenType::kDeref: {
-            Node *prefix = create_node(l, NodeType::kPrefix);
-            prefix->data.prefix.op = tkn->type;
+            Node *prefix = create_node(l, NodeKind::kPrefix);
+            prefix->prefix.op = tkn->type;
             lex_next(l);  // next 'op'
-            prefix->data.prefix.inner = parse_infix(l, kPrefixPrecedence, parse_operand(l));
+            prefix->prefix.inner = parse_infix(l, kPrefixPrecedence, parse_operand(l));
             end_node(l, prefix);
-            if (!prefix->data.prefix.inner) return nullptr;
+            if (!prefix->prefix.inner) return nullptr;
             return prefix;
         }
         case TokenType::kIntLiteral: {
-            Node *intLit = create_node(l, NodeType::kIntLit);
-            intLit->data.intLit.intVal = tkn->data.intVal;
+            Node *intLit = create_node(l, NodeKind::kIntLit);
+            intLit->intLit.intVal = tkn->intVal;
             lex_next(l);  // next 'intlit'
             end_node(l, intLit);
             return intLit;
         }
         case TokenType::kStrLiteral: {
-            Node *strLit = create_node(l, NodeType::kStrLit);
-            strLit->data.strLit.strVal = tkn->data.str;
+            Node *strLit = create_node(l, NodeKind::kStrLit);
+            strLit->strLit.strVal = tkn->str;
             lex_next(l);  // next 'intlit'
             end_node(l, strLit);
             return strLit;
         }
         case TokenType::kIdent: {
-            Node *name = create_node(l, NodeType::kName);
-            name->data.name.ident = tkn->data.ident;
+            Node *name = create_node(l, NodeKind::kName);
+            name->name.ident = tkn->ident;
             lex_next(l);  // next 'ident'
             end_node(l, name);
             return name;
@@ -244,8 +285,8 @@ Node *parse_operand(Lexer *l) {
             return expr;
         }
         case TokenType::kColon: {
-            Node *func = create_node(l, NodeType::kFunc);
-            func->data.func.params = {};
+            Node *func = create_node(l, NodeKind::kFunc);
+            func->func.params = {};
             lex_next(l);  // next :
             if (!check_peek(l, TokenType::kLParen)) {
                 dx_err(at_token(l->finfo, lex_peek(l)), "Expected ( for parameter list of function\n");
@@ -272,7 +313,7 @@ Node *parse_operand(Lexer *l) {
                 if (!lval) return nullptr;
                 Node *param = parse_decl_from_lval(l, lval);
                 if (!param) return nullptr;
-                func->data.func.params.add(param);
+                func->func.params.add(param);
 
                 if (check_peek(l, TokenType::kComma)) {
                     lex_next(l);  // next ,
@@ -286,22 +327,22 @@ Node *parse_operand(Lexer *l) {
             }
             if (check_peek(l, TokenType::kArrow)) {
                 lex_next(l);  // next ->
-                func->data.func.retTy = parse_type(l);
-                if (!func->data.func.retTy) return nullptr;
+                func->func.retTy = parse_type(l);
+                if (!func->func.retTy) return nullptr;
             } else {
-                func->data.func.retTy = nullptr;
+                func->func.retTy = nullptr;
             }
 
             if (check_peek(l, TokenType::kRetArrow)) {
                 lex_next(l);  // next =>
-                func->data.func.body = parse_expr(l);
+                func->func.body = parse_expr(l);
             } else if (check_peek(l, TokenType::kLCurl)) {
-                func->data.func.body = parse_block(l);
+                func->func.body = parse_block(l);
             } else {
                 dx_err(at_token(l->finfo, lex_peek(l)), "Expected { or => to define function body\n");
                 return nullptr;
             }
-            if (!func->data.func.body) return nullptr;
+            if (!func->func.body) return nullptr;
             end_node(l, func);
             return func;
         }
@@ -324,16 +365,17 @@ Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
         switch (op) {
             case TokenType::kAdd:
             case TokenType::kSubNeg:
-            case TokenType::kBitAnd: {
-                Node *infix = create_node(l, NodeType::kInfix);
+            case TokenType::kBitAnd:
+            case TokenType::kDot: {
+                Node *infix = create_node(l, NodeKind::kInfix);
                 align_node_start(infix, left->startI);
-                infix->data.infix.left = left;
-                infix->data.infix.op = op;
+                infix->infix.left = left;
+                infix->infix.op = op;
                 lex_next(l);  // next infix operator
-                infix->data.infix.right = parse_infix(l, rprec, parse_operand(l));
+                infix->infix.right = parse_infix(l, rprec, parse_operand(l));
                 end_node(l, infix);
                 left = infix;
-                if (!infix->data.infix.right) return nullptr;
+                if (!infix->infix.right) return nullptr;
                 break;
             }
             case TokenType::kAddAdd:
@@ -342,10 +384,10 @@ Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
                 return nullptr;
             }
             case TokenType::kLParen: {
-                Node *call = create_node(l, NodeType::kCall);
+                Node *call = create_node(l, NodeKind::kCall);
                 align_node_start(call, left->startI);
-                call->data.call.args = {};
-                call->data.call.callee = left;
+                call->call.args = {};
+                call->call.callee = left;
                 lex_next(l);  // next (
                 for (;;) {
                     Token *tkn = lex_peek(l);
@@ -361,7 +403,7 @@ Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
 
                     Node *arg = parse_expr(l);
                     if (!arg) return nullptr;
-                    call->data.call.args.add(arg);
+                    call->call.args.add(arg);
 
                     if (check_peek(l, TokenType::kComma)) {
                         lex_next(l);  // next ,
@@ -387,32 +429,32 @@ Node *parse_expr(Lexer *l) { return parse_infix(l, kLowPrecedence, parse_operand
 
 Node *parse_if(Lexer *l) {
     assert(check_peek(l, TokenType::kIf));
-    Node *ifstmt = create_node(l, NodeType::kIf);
+    Node *ifstmt = create_node(l, NodeKind::kIf);
     lex_next(l);  // next if
 
-    ifstmt->data.ifstmt.cond = parse_expr(l);
-    if (!ifstmt->data.ifstmt.cond) return nullptr;
+    ifstmt->ifstmt.cond = parse_expr(l);
+    if (!ifstmt->ifstmt.cond) return nullptr;
 
     if (!check_peek(l, TokenType::kLCurl)) {
         dx_err(at_token(l->finfo, lex_peek(l)), "Expected { to define body of if statement\n");
         return nullptr;
     }
-    ifstmt->data.ifstmt.then = parse_block(l);
-    if (!ifstmt->data.ifstmt.then) return nullptr;
+    ifstmt->ifstmt.then = parse_block(l);
+    if (!ifstmt->ifstmt.then) return nullptr;
 
     if (check_peek(l, TokenType::kElse)) {
         lex_next(l);  // next else
         if (check_peek(l, TokenType::kIf)) {
-            ifstmt->data.ifstmt.alt = parse_if(l);
+            ifstmt->ifstmt.alt = parse_if(l);
         } else if (check_peek(l, TokenType::kLCurl)) {
-            ifstmt->data.ifstmt.alt = parse_block(l);
+            ifstmt->ifstmt.alt = parse_block(l);
         } else {
             dx_err(at_token(l->finfo, lex_peek(l)), "Expected { to define else body or if keyword to define else if\n");
             return nullptr;
         }
-        if (!ifstmt->data.ifstmt.alt) return nullptr;
+        if (!ifstmt->ifstmt.alt) return nullptr;
     } else {
-        ifstmt->data.ifstmt.alt = nullptr;
+        ifstmt->ifstmt.alt = nullptr;
     }
 
     end_node(l, ifstmt);
@@ -421,18 +463,18 @@ Node *parse_if(Lexer *l) {
 
 Node *parse_while(Lexer *l) {
     assert(check_peek(l, TokenType::kWhile));
-    Node *whilestmt = create_node(l, NodeType::kWhile);
+    Node *whilestmt = create_node(l, NodeKind::kWhile);
     lex_next(l);  // next while
 
-    whilestmt->data.whilestmt.cond = parse_expr(l);
-    if (!whilestmt->data.whilestmt.cond) return nullptr;
+    whilestmt->whilestmt.cond = parse_expr(l);
+    if (!whilestmt->whilestmt.cond) return nullptr;
 
     if (!check_peek(l, TokenType::kLCurl)) {
         dx_err(at_token(l->finfo, lex_peek(l)), "Expected { to define body of while statement\n");
         return nullptr;
     }
-    whilestmt->data.whilestmt.loop = parse_block(l);
-    if (!whilestmt->data.whilestmt.loop) return nullptr;
+    whilestmt->whilestmt.loop = parse_block(l);
+    if (!whilestmt->whilestmt.loop) return nullptr;
 
     end_node(l, whilestmt);
     return whilestmt;
@@ -440,8 +482,8 @@ Node *parse_while(Lexer *l) {
 
 Node *parse_block(Lexer *l) {
     assert(check_peek(l, TokenType::kLCurl));
-    Node *block = create_node(l, NodeType::kBlock);
-    block->data.block.stmts = {};
+    Node *block = create_node(l, NodeKind::kBlock);
+    block->block.stmts = {};
     lex_next(l);  // next {
 
     for (;;) {
@@ -453,29 +495,29 @@ Node *parse_block(Lexer *l) {
         switch (tkn->type) {
             case TokenType::kIf:
                 if (Node *ifstmt = parse_if(l)) {
-                    block->data.block.stmts.add(ifstmt);
+                    block->block.stmts.add(ifstmt);
                 } else {
                     return nullptr;
                 }
                 break;
             case TokenType::kWhile:
                 if (Node *whilestmt = parse_while(l)) {
-                    block->data.block.stmts.add(whilestmt);
+                    block->block.stmts.add(whilestmt);
                 } else {
                     return nullptr;
                 }
                 break;
             case TokenType::kRet: {
-                Node *ret = create_node(l, NodeType::kRet);
+                Node *ret = create_node(l, NodeKind::kRet);
                 lex_next(l);  // next ret
                 if (!check_peek(l, TokenType::kRCurl)) {
-                    ret->data.ret.value = parse_expr(l);
-                    if (!ret->data.ret.value) return nullptr;
+                    ret->ret.value = parse_expr(l);
+                    if (!ret->ret.value) return nullptr;
                 } else {
-                    ret->data.ret.value = nullptr;
+                    ret->ret.value = nullptr;
                 }
                 end_node(l, ret);
-                block->data.block.stmts.add(ret);
+                block->block.stmts.add(ret);
                 break;
             }
             case TokenType::kEof:
@@ -484,7 +526,7 @@ Node *parse_block(Lexer *l) {
             case TokenType::kErr: return nullptr;
             default:
                 if (Node *declOrExpr = parse_decl_or_expr(l)) {
-                    block->data.block.stmts.add(declOrExpr);
+                    block->block.stmts.add(declOrExpr);
                 } else {
                     return nullptr;
                 }
@@ -497,32 +539,28 @@ Node *parse_block(Lexer *l) {
 }  // namespace
 
 Node *parse_unit(Lexer *l) {
-    Node *unit = create_node(l, NodeType::kUnit);
-    unit->data.unit.imports = {};
-    unit->data.unit.decls = {};
+    Node *unit = create_node(l, NodeKind::kUnit);
+    unit->unit.imports.init();
+    unit->unit.decls = {};
     lex_next(l);  // Grab first lexer token
     while (lex_peek(l)->type != TokenType::kEof) {
         Token *tkn = lex_peek(l);
         if (tkn->type == TokenType::kErr) return nullptr;
-
         if (tkn->type == TokenType::kImport) {
-            lex_next(l);  // next import
-
-            tkn = lex_peek(l);
-            if (tkn->type == TokenType::kErr) return nullptr;
-            if (tkn->type != TokenType::kStrLiteral) {
-                dx_err(at_token(l->finfo, tkn), "Expected file name after import keyword\n");
+            Node *import = parse_import(l);
+            if (!import) return nullptr;
+            if (Node **otherImport = unit->unit.imports.try_put(import->import.alias, import)) {
+                dx_err(at_node(l->finfo, import), "Duplicate import alias: %s\n", lstr_raw_str(import->import.alias));
+                dx_err(at_node(l->finfo, *otherImport), "Previous import here\n");
                 return nullptr;
             }
-            unit->data.unit.imports.add(tkn->data.ident);
-            lex_next(l);  // next ident
         } else if (Node *declOrExpr = parse_decl_or_expr(l)) {
-            if (declOrExpr->type == NodeType::kDecl) {
-                declOrExpr->data.decl.isDecl = true;
-                unit->data.unit.decls.add(declOrExpr);
+            if (declOrExpr->kind == NodeKind::kDecl) {
+                declOrExpr->decl.isDecl = true;
+                unit->unit.decls.add(declOrExpr);
             } else {
                 dx_err(at_node(l->finfo, declOrExpr), "%s expression cannot be in global scope\n",
-                       node_type_string(declOrExpr->type));
+                       node_kind_string(declOrExpr->kind));
                 return nullptr;
             }
         } else {

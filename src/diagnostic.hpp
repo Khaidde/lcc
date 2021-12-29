@@ -1,5 +1,5 @@
-#ifndef LCC_DIAGNOSTICS_HPP
-#define LCC_DIAGNOSTICS_HPP
+#ifndef LCC_DIAGNOSTIC_HPP
+#define LCC_DIAGNOSTIC_HPP
 
 #include "astnode.hpp"
 #include "file.hpp"

@@ -21,7 +21,7 @@ FileErrCode read_file(FileInfo **out, const char *filepath);
 
 bool is_regular_file(const char *path);
 
-LString get_dir(const char *path);
+LString split_dir(const char *path);
 
 FileErrCode file_in_dir(LList<LString> &outfiles, LString &dirname);
 

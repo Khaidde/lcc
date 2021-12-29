@@ -1,8 +1,10 @@
 #ifndef LCC_ASTNODE_HPP
 #define LCC_ASTNODE_HPP
 
+#include "hashmap.hpp"
 #include "lexer.hpp"
 #include "list.hpp"
+#include "scope.hpp"
 
 namespace lcc {
 
@@ -18,6 +20,7 @@ enum class TypeKind {
 
 enum class BaseTypeKind {
     u16,
+    string,
 };
 
 const char *base_type_string(BaseTypeKind kind);
@@ -41,7 +44,7 @@ struct Type {
         BaseType base;
         PtrType ptr;
         FuncType func;
-    } data;
+    };
 };
 
 const char *type_string(Type *type);
@@ -50,11 +53,13 @@ namespace builtin_type {
 
 extern Type none;
 extern Type u16;
+extern Type string;
 
 }  // namespace builtin_type
 
-enum class NodeType {
+enum class NodeKind {
     kUnit,
+    kImport,
     kDecl,
     kType,
     kIntLit,
@@ -71,8 +76,13 @@ enum class NodeType {
 };
 
 struct UnitNode {
-    LList<LStringView> imports;
+    LMap<LStringView, Node *, lstr_hash, lstr_equal> imports;
     LList<Node *> decls;
+};
+
+struct ImportNode {
+    LStringView alias;
+    LStringView package;
 };
 
 struct DeclNode {
@@ -83,6 +93,9 @@ struct DeclNode {
     Type *resolvedTy;
     bool isDecl;
     bool isChecked;
+
+    struct Package *package;
+    struct File *file;
 };
 
 struct IntLitNode {
@@ -139,12 +152,13 @@ struct RetNode {
 };
 
 struct Node {
-    NodeType type;
+    NodeKind kind;
     size_t startI;
     size_t endI;
 
     union {
         UnitNode unit;
+        ImportNode import;
         DeclNode decl;
         Type type;
         IntLitNode intLit;
@@ -158,10 +172,10 @@ struct Node {
         IfNode ifstmt;
         WhileNode whilestmt;
         RetNode ret;
-    } data;
+    };
 };
 
-const char *node_type_string(NodeType type);
+const char *node_kind_string(NodeKind kind);
 
 void print_ast(Node *node);
 

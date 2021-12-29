@@ -20,6 +20,8 @@ LString lstr_create(LStringView &strView) {
     return lStr;
 }
 
+const char *lstr_raw_str(LStringView &strView) { return lstr_create(strView).data; }
+
 const char *lstr_raw_view(LString &src, size_t off, size_t len) {
     char *data = mem::c_malloc<char>(len + 1);
     strncpy(data, src.data + off, len);

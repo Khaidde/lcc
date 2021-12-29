@@ -3,10 +3,8 @@
 #include <cstdio>
 
 #if defined(_WIN32) && defined(__MINGW32__)
-#include <direct.h>
 #include <dirent.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <windows.h>
 #else
 #error "Compilation only supported on windows with posix libraries"
@@ -47,23 +45,21 @@ bool is_regular_file(const char *path) {
     return S_ISREG(pathStat.st_mode);
 }
 
-LString get_dir(const char *path) {
+LString split_dir(const char *path) {
     LString out;
-    out.init(MAX_PATH);
-
-    char *optr = out.data;
-    char *sep = nullptr;
+    size_t sep = 0;
+    size_t i = 0;
     while (*path) {
-        if (*path == '/' || *path == '\\') sep = optr;
-        *(optr++) = *(path++);
+        if (*path == '/' || *path == '\\') sep = i;
+        out.add((char)*(path++));
+        i++;
     }
     if (sep) {
-        *sep = '\0';
-        out.size = (size_t)(sep - out.data + 1);
+        out.data[sep] = '\0';
     } else {
+        out.init(2);
         out.data[0] = '.';
         out.data[1] = '\0';
-        out.size = 2;
     }
     return out;
 }

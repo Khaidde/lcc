@@ -2,7 +2,7 @@
 #define LCC_HASHMAP_HPP
 
 #include "lstring.hpp"
-#include "print.hpp"
+#include "mem.hpp"
 #include "util.hpp"
 
 namespace lcc {

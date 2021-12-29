@@ -10,34 +10,29 @@ constexpr size_t kMaxScopeDepth = 8;
 
 struct ScopeStack {
     size_t size;
-    LMap<LStringView, Node *, lstr_hash, lstr_equal> scopes[kMaxScopeDepth];
+    LMap<LStringView, struct Node *, lstr_hash, lstr_equal> scopes[kMaxScopeDepth];
 };
 
-struct FileUnit {
+struct File {
     file::FileInfo *finfo;
-    Node *unit;
-};
-
-struct DeclContext {
-    struct Package *package;
-    FileUnit *fileUnit;
-    Node *decl;
+    struct Node *unit;
+    ScopeStack *scopeStack;
 };
 
 struct Package {
-    LMap<LStringView, DeclContext, lstr_hash, lstr_equal> globalDecls;
-    LList<FileUnit> files;
+    LMap<LStringView, struct Node *, lstr_hash, lstr_equal> globalDecls;
+    LList<File *> files;
 };
 
 struct Context {
-    Package *currPackage;
-    FileUnit *currFile;
-    ScopeStack *currScopeStack;
+    Package *package;
+    File *file;
 };
 
 struct CompilationContext {
     LMap<LStringView, Package *, lstr_hash, lstr_equal> packageMap;
     bool isPackageResolutionSuccesful;
+
     Context ctx;
 };
 
@@ -49,9 +44,7 @@ void scope_exit(ScopeStack *stack);
 
 Node *scope_bind(ScopeStack *stack, Node *decl);
 
-Node *scope_lookup(Context *ctx, LStringView &symbol);
-
-DeclContext *scope_lookup_global(CompilationContext *cmp, LStringView &symbol);
+Node *decl_lookup(CompilationContext *cmp, LStringView &symbol);
 
 CompilationContext resolve_packages(const char *mainFile);
 
