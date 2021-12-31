@@ -12,9 +12,57 @@ import "io"
 // cool = io.print(3)
 // other = runt
 
-main = :() {
-
-  // val = area_sphere(3)
-  // print(val)
-  io.print(val)
+/*
+point = struct {
+  x: u16
+  y: u16
 }
+other = point
+
+u8 : type = #extern
+u16: type = #extern
+
+impl + for u8 = :(other: u8) => #add(self, other, 8)
+
+u16.+ = :(b: u16) => #add(self, b, 16)
+*/
+
+val := 2
+main := :() {
+  i := 0b101
+  dupTest = 9
+  val = math.area_sphere(3)
+  a := 2
+  e2 : u16 = 2
+  @oaa = 3
+  {
+    i = 4
+    ptri := *i
+  }
+  {
+    ptri := 2
+  }
+  other := :(a: u16, b: u16) {
+    i := a + b
+    val = a
+  }
+  io.print("rand")
+  if i {
+    i = 2
+  } else if i - 1 {
+    i = 3
+  } else {
+    i = 4
+  }
+}
+
+// test = math.mult(3, 4)
+
+/*
+callCallback = :(callback: (u16, u16) -> u16) -> string {
+  callback(4, 5)
+  ret "lol"
+}
+asdf = callCallback(:(a: u16, b: u16) => (:(a: u16) => a)(a) + b)
+factorial = :(n: u16) => factorial(n - 1)
+*/

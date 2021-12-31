@@ -47,10 +47,10 @@ void lstr_cat(LString &dest, LStringView &view) {
 
 LStringView lstr_view(const char *str, size_t off, size_t len) { return {str + off, len}; }
 
-u32 lstr_hash(LStringView &str) {
-    u32 hash = 0;
+uint32_t lstr_hash(LStringView &str) {
+    uint32_t hash = 1;
     for (size_t i = 0; i < str.len; i++) {
-        hash = ((hash << 5) - hash) + (u32)str.src[i];
+        hash = ((hash << 5) - hash) + (uint32_t)str.src[i];
     }
     return hash;
 }

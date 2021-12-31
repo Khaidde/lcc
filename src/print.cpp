@@ -1,7 +1,6 @@
 #include "print.hpp"
 
 #include <cstdarg>
-#include <cstring>
 
 namespace lcc {
 

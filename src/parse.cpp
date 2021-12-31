@@ -1,7 +1,9 @@
 #include "parse.hpp"
 
+#include "ast.hpp"
 #include "diagnostic.hpp"
 #include "print.hpp"
+#include "token.hpp"
 
 namespace lcc {
 
@@ -25,7 +27,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval);
 Node *parse_type(Lexer *l);
 
 Node *parse_operand(Lexer *l);
-Node *parse_infix(Lexer *l, u8 prec, Node *left);
+Node *parse_infix(Lexer *l, int prec, Node *left);
 Node *parse_expr(Lexer *l);
 
 Node *parse_block(Lexer *l);
@@ -86,6 +88,11 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
             dx_err(at_node(l->finfo, lval), "%s prefix expression not allowed as lvalue\n",
                    token_type_string(lval->prefix.op));
             return nullptr;
+        case NodeKind::kInfix:
+            if (lval->infix.op == TokenType::kDot) break;
+            dx_err(at_node(l->finfo, lval), "%s infix expression not allowed as lvalue\n",
+                   token_type_string(lval->infix.op));
+            return nullptr;
         default:
             dx_err(at_node(l->finfo, lval), "%s expression not allowed as lvalue\n", node_kind_string(lval->kind));
             return nullptr;
@@ -94,21 +101,29 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     Node *decl = create_node(l, NodeKind::kDecl);
     align_node_start(decl, lval->startI);
     decl->decl.lval = lval;
-    decl->decl.resolvedTy = nullptr;
-    decl->decl.isDecl = false;
-    decl->decl.isChecked = false;
-    decl->decl.package = nullptr;
     decl->decl.file = nullptr;
+    decl->decl.resolvedTy = nullptr;
+    decl->decl.isVisited = false;
+    decl->decl.isBound = false;
 
+    if (check_peek(l, TokenType::kErr)) return nullptr;
     bool hasType = check_peek(l, TokenType::kColon);
     if (hasType) {
         decl->decl.isDecl = true;
         lex_next(l);  // next :
-        decl->decl.staticTy = parse_type(l);
-        if (!decl->decl.staticTy) return nullptr;
+
+        if (check_peek(l, TokenType::kAssign)) {
+            decl->decl.staticTy = nullptr;
+        } else {
+            decl->decl.staticTy = parse_type(l);
+            if (!decl->decl.staticTy) return nullptr;
+        }
     } else {
+        decl->decl.isDecl = false;
         decl->decl.staticTy = nullptr;
     }
+
+    if (check_peek(l, TokenType::kErr)) return nullptr;
     bool hasAssignment = check_peek(l, TokenType::kAssign);
     if (hasAssignment) {
         lex_next(l);  // next =
@@ -198,6 +213,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
                 dest->func.retTy = mem::malloc<Type>();
                 if (r_parse_type(l, dest->func.retTy)) return true;
             } else {
+                // TODO: builtin_type may/should be removed for prelude system
                 dest->func.retTy = &builtin_type::none;
             }
             break;
@@ -218,11 +234,11 @@ Node *parse_type(Lexer *l) {
     return type;
 }
 
-constexpr u8 kLowPrecedence = 0;
-constexpr u8 kPrefixPrecedence = 3;
-constexpr u8 kPostfixPrecedence = 4;
+constexpr int kLowPrecedence = 0;
+constexpr int kPrefixPrecedence = 3;
+constexpr int kPostfixPrecedence = 4;
 
-u8 get_precedence(TokenType op) {
+int get_precedence(TokenType op) {
     switch (op) {
         case TokenType::kAddAdd:
         case TokenType::kSubSub:
@@ -269,6 +285,7 @@ Node *parse_operand(Lexer *l) {
             Node *name = create_node(l, NodeKind::kName);
             name->name.ident = tkn->ident;
             lex_next(l);  // next 'ident'
+            name->name.ref = nullptr;
             end_node(l, name);
             return name;
         }
@@ -354,12 +371,12 @@ Node *parse_operand(Lexer *l) {
     }
 }
 
-Node *parse_infix(Lexer *l, u8 lprec, Node *left) {
+Node *parse_infix(Lexer *l, int lprec, Node *left) {
     while (left) {
         TokenType op = lex_peek(l)->type;
         if (op == TokenType::kErr) return nullptr;
 
-        u8 rprec = get_precedence(op);
+        int rprec = get_precedence(op);
         if (lprec >= rprec) break;
 
         switch (op) {
@@ -493,6 +510,13 @@ Node *parse_block(Lexer *l) {
             break;
         }
         switch (tkn->type) {
+            case TokenType::kLCurl:
+                if (Node *innerBlock = parse_block(l)) {
+                    block->block.stmts.add(innerBlock);
+                } else {
+                    return nullptr;
+                }
+                break;
             case TokenType::kIf:
                 if (Node *ifstmt = parse_if(l)) {
                     block->block.stmts.add(ifstmt);
@@ -522,6 +546,7 @@ Node *parse_block(Lexer *l) {
             }
             case TokenType::kEof:
                 dx_err(at_eof(l), "Expected another statement but reached the end of the file\n");
+                dx_note(at_node(l->finfo, block), "Block starts here\n");
                 return nullptr;
             case TokenType::kErr: return nullptr;
             default:
@@ -538,37 +563,61 @@ Node *parse_block(Lexer *l) {
 
 }  // namespace
 
-Node *parse_unit(Lexer *l) {
-    Node *unit = create_node(l, NodeKind::kUnit);
-    unit->unit.imports.init();
-    unit->unit.decls = {};
-    lex_next(l);  // Grab first lexer token
-    while (lex_peek(l)->type != TokenType::kEof) {
-        Token *tkn = lex_peek(l);
-        if (tkn->type == TokenType::kErr) return nullptr;
-        if (tkn->type == TokenType::kImport) {
-            Node *import = parse_import(l);
-            if (!import) return nullptr;
-            if (Node **otherImport = unit->unit.imports.try_put(import->import.alias, import)) {
-                dx_err(at_node(l->finfo, import), "Duplicate import alias: %s\n", lstr_raw_str(import->import.alias));
-                dx_err(at_node(l->finfo, *otherImport), "Previous import here\n");
-                return nullptr;
+Result parse_file(File *file) {
+    Lexer l{};
+    l.finfo = file->finfo;
+    lex_next(&l);  // Grab first lexer token
+    for (;;) {
+        if (lex_peek(&l)->type == TokenType::kEof) return Result::kAccept;
+        if (lex_peek(&l)->type == TokenType::kErr) return Result::kError;
+        if (lex_peek(&l)->type == TokenType::kImport) {
+            Node *import = parse_import(&l);
+            if (!import) return Result::kError;
+            if (Node **otherImport = file->imports.try_put(import->import.alias, import)) {
+                dx_err(at_node(l.finfo, import), "Duplicate import alias: %s\n", lstr_raw_str(import->import.alias));
+                dx_err(at_node(l.finfo, *otherImport), "Previous import here\n");
+                return Result::kError;
             }
-        } else if (Node *declOrExpr = parse_decl_or_expr(l)) {
+        } else if (Node *declOrExpr = parse_decl_or_expr(&l)) {
             if (declOrExpr->kind == NodeKind::kDecl) {
-                declOrExpr->decl.isDecl = true;
-                unit->unit.decls.add(declOrExpr);
+                if (!declOrExpr->decl.isDecl) {
+                    dx_err(at_node(l.finfo, declOrExpr), "Assignment cannot be in global scope\n",
+                           node_kind_string(declOrExpr->kind));
+                    return Result::kError;
+                }
+                declOrExpr->decl.file = file;
+
+                if (declOrExpr->decl.lval->kind != NodeKind::kName) {
+                    dx_err(at_node(file->finfo, declOrExpr->decl.lval),
+                           "Must only declare variable names in global scope\n");
+                    return Result::kError;
+                }
+
+                LStringView &declName = declOrExpr->decl.lval->name.ident;
+                if (Node **other = file->package->globalDecls.try_put(declName, declOrExpr)) {
+                    Node *otherDecl = *other;
+                    dx_err(at_node(file->finfo, declOrExpr->decl.lval), "Duplicate declaration\n");
+                    dx_note(at_node(otherDecl->decl.file->finfo, otherDecl->decl.lval), "Previous declaration here\n");
+                    return Result::kError;
+                }
+                if (Node **other = file->imports.get(declName)) {
+                    Node *otherImport = *other;
+                    dx_err(at_node(file->finfo, otherImport),
+                           "Import alias cannot have the same name as a declaration\n");
+                    dx_note(at_node(declOrExpr->decl.file->finfo, declOrExpr), "Declaration found here\n");
+                    return Result::kError;
+                }
+                declOrExpr->decl.isBound = true;
             } else {
-                dx_err(at_node(l->finfo, declOrExpr), "%s expression cannot be in global scope\n",
+                dx_err(at_node(l.finfo, declOrExpr), "%s expression cannot be in global scope\n",
                        node_kind_string(declOrExpr->kind));
-                return nullptr;
+                return Result::kError;
             }
         } else {
-            return nullptr;
+            return Result::kError;
         }
     }
-    end_node(l, unit);
-    return unit;
+    return Result::kAccept;
 }
 
 }  // namespace lcc

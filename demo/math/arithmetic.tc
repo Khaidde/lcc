@@ -1,20 +1,34 @@
 import "io"
 
-add = :(a: u16, b: u16) => a + b
+add := :(a: u16, b: u16) => a + b
 
-mult = :(a: u16, b: u16) -> u16 {
-  res = b
+mult := :(a: u16, b: u16) -> u16 {
+  res := b
   while (a) {
     --a
     res = res + b
   }
-  return res
+  ret res
 }
 
-square = :(n: u16) => mult(n, n)
+factorial := :(n: u16) -> u16 {
+  a = 3
+  b = :(n: u16) -> string {
+    if n - 2 { ret "thing" } else { ret "other" }
+  } (a)
 
-area_sphere = :(r: u16) => mult(square(r), pi)
+  d: string
+  if (a - 2) {
+    d = "thing"
+  } else {
+    d = "other"
+  }
+}
 
-display_area_sphere = :(r: u16) {
+square := :(n: u16) => mult(n, n)
+
+area_sphere := :(r: u16) => mult(square(r), pi)
+
+display_area_sphere := :(r: u16) {
   print(area_sphere(r))
 }

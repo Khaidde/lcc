@@ -1,8 +1,9 @@
 #ifndef LCC_MEM_HPP
 #define LCC_MEM_HPP
 
-#include "malloc.h"
-#include "util.hpp"
+#include <malloc.h>
+
+#include <cstdint>
 
 namespace lcc::mem {
 
@@ -14,7 +15,7 @@ struct ArenaAllocator {
             size_t offset;
             Block *next;
         } header;
-        unsigned char buffer[kBlockDataSize];
+        char buffer[kBlockDataSize];
     };
     Block *head;
 

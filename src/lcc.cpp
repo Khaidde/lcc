@@ -1,13 +1,15 @@
 #include "lcc.hpp"
 
+#include <cstdio>
 #include <cstring>
 
 #include "analysis.hpp"
 #include "diagnostic.hpp"
 #include "lstring.hpp"
+#include "parse.hpp"
 #include "print.hpp"
 #include "scope.hpp"
-#include "util.hpp"
+#include "types.hpp"
 
 namespace lcc {
 
@@ -55,13 +57,13 @@ ErrCode set_num_context_lines(FlagParserInfo &finfo) {
         return ErrCode::kFailure;
     }
     const char *num = finfo.argv[finfo.ndx];
-    u16 val = 0;
+    size_t val = 0;
     while (*num) {
         if (*num < '0' || *num > '9') {
             err("%s expected to be a positive number\n", finfo.argv[finfo.ndx]);
             return ErrCode::kFailure;
         }
-        val = val * 10 + *num - '0';
+        val = val * 10 + (unsigned)*num - '0';
         if (val > 0xFF) {
             err("%s exceeds maximum number of context lines displayable\n", finfo.argv[finfo.ndx]);
             return ErrCode::kFailure;
@@ -139,6 +141,97 @@ ErrCode parse_args(FlagParserInfo &finfo) {
 
 }  // namespace
 
+CompilationContext resolve_packages(const char *mainFile) {
+    CompilationContext cmp;
+    cmp.packageMap.init();
+
+    struct ImportContext {
+        File *srcFile;
+        LStringView importName;
+    };
+    LList<ImportContext> importStack{};
+
+    LString rootDir = file::split_dir(mainFile);
+    importStack.add({nullptr, {".", 1}});
+
+    LList<LString> filenames{};
+    while (importStack.size) {
+        // Get next import to resolve
+        ImportContext &importCtx = importStack.last();
+        importStack.size--;
+
+        if (!cmp.packageMap.get(importCtx.importName)) {
+            // Find all files in the package if package directory exists
+            LString pkgDir = lstr_create(rootDir.data);
+            if (importCtx.importName.len != 1 || importCtx.importName.src[0] != '.') {
+                lstr_cat(pkgDir, "/");
+                lstr_cat(pkgDir, importCtx.importName);
+            }
+            if (file::file_in_dir(filenames, pkgDir) == file::FileErrCode::kNotFound) {
+                err("Could not find package '%s' imported by '%s'\n", lstr_raw_str(importCtx.importName),
+                    importCtx.srcFile->finfo->path);
+                cmp.isPackageResolutionSuccesful = false;
+                return cmp;
+            }
+            info("Importing package '%s' ...\n", lstr_raw_str(importCtx.importName));
+
+            Package *pkg = mem::malloc<Package>();
+            pkg->files = {};
+            pkg->globalDecls.init();
+            cmp.packageMap.try_put(importCtx.importName, pkg);
+
+            for (size_t i = 0; i < filenames.size; i++) {
+                // Parse file
+                File *file = mem::malloc<File>();
+                if (file::read_file(&file->finfo, filenames.get(i).data) != file::FileErrCode::kSuccess) {
+                    err("Failed to read file: %s\n", filenames.get(i).data);
+                    cmp.isPackageResolutionSuccesful = false;
+                    return cmp;
+                }
+                file->package = pkg;
+                file->imports.init();
+                file->scopeStack = nullptr;
+                pkg->files.add(file);
+                if (parse_file(file)) {
+                    cmp.isPackageResolutionSuccesful = false;
+                    return cmp;
+                }
+
+                // Add pending imports in current file to import stack
+                for (size_t k = 0; k < file->imports.capacity; k++) {
+                    if (file->imports.table[k].psl) {
+                        Node *import = file->imports.table[k].val;
+                        if (!cmp.packageMap.get(import->import.package)) {
+                            importStack.add({file, import->import.package});
+                        }
+                    }
+                }
+            }
+
+            // Make sure package aliases don't confict with declaration names
+            for (size_t i = 0; i < pkg->files.size; i++) {
+                File *file = pkg->files.get(i);
+                for (size_t k = 0; k < file->imports.capacity; k++) {
+                    auto &entry = file->imports.table[k];
+                    if (entry.psl) {
+                        if (Node **decl = pkg->globalDecls.get(entry.val->import.alias)) {
+                            dx_err(at_node(file->finfo, entry.val),
+                                   "Import alias cannot have the same name as a declaration\n");
+                            dx_note(at_node((*decl)->decl.file->finfo, *decl), "Declaration found here\n");
+                            cmp.isPackageResolutionSuccesful = false;
+                            return cmp;
+                        }
+                    }
+                }
+            }
+        }  // end of package resolution
+
+        filenames.size = 0;
+    }
+    cmp.isPackageResolutionSuccesful = true;
+    return cmp;
+}
+
 ErrCode command_line(int argc, char **argv) {
     FlagParserInfo finfo{argv, argc};
     if (parse_args(finfo) == ErrCode::kFailure) {
@@ -165,18 +258,26 @@ ErrCode compile(const char *path) {
         return ErrCode::kFailure;
     }
 
+    // Prepare stack for analysis of entire program
+    cmp.resolveFuncBodyStack = {};
+
     LStringView root{".", 1};
     Package *pkg = *cmp.packageMap.get(root);
     File *file = pkg->files.get(0);
-
     info("Compiling %s ...\n", file->finfo->path);
 
     // Semantic analysis of the file
-    cmp.ctx.package = pkg;
-    cmp.ctx.file = file;
+    cmp.file = file;
     if (analyze_file(&cmp)) return ErrCode::kFailure;
 
-    print_ast(file->unit);
+    pkg = *cmp.packageMap.get(root);
+    // Print all declarations in the current package
+    for (size_t i = 0; i < pkg->globalDecls.capacity; i++) {
+        auto &entry = pkg->globalDecls.table[i];
+        if (entry.psl) {
+            print_ast(entry.val);
+        }
+    }
 
     return ErrCode::kSuccess;
 }

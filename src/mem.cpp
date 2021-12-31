@@ -97,7 +97,7 @@ void *ArenaAllocator::realloc(void *ptr, size_t prevSize, size_t newSize) {
 
     void *oldPtr = ptr;
     ptr = &bestFit->buffer[bestFit->header.offset];
-    std::memcpy(ptr, oldPtr, prevSize);
+    memcpy(ptr, oldPtr, prevSize);
 
     bestFit->header.prevPtr = (intptr_t)ptr;
     bestFit->header.offset += newSize;

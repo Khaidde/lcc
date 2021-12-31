@@ -2,6 +2,7 @@
 #define LCC_LIST_HPP
 
 #include <cassert>
+#include <cstdint>
 
 #include "mem.hpp"
 

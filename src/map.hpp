@@ -1,14 +1,15 @@
-#ifndef LCC_HASHMAP_HPP
-#define LCC_HASHMAP_HPP
+#ifndef LCC_MAP_HPP
+#define LCC_MAP_HPP
 
-#include "lstring.hpp"
+#include <cassert>
+#include <cstdint>
+
 #include "mem.hpp"
-#include "util.hpp"
 
 namespace lcc {
 
 // Robin hood algorithm based hashmap
-template <typename K, typename V, u32 hash_func(K &), bool equal_func(K &, K &)>
+template <typename K, typename V, uint32_t hash_func(K &), bool equal_func(K &, K &)>
 struct LMap {
     struct Entry {
         K key;
@@ -42,7 +43,7 @@ struct LMap {
     }
     V *try_put(K &key, V &&val) { return try_put(key, val); }
     V *get(K &key) {
-        u32 ndx = hash_func(key) % capacity;
+        size_t ndx = hash_func(key) % capacity;
         for (size_t off = 0; off < maxPSL; off++) {
             Entry *entry = &table[ndx];
             if (entry->psl && equal_func(entry->key, key)) return &entry->val;
@@ -57,8 +58,8 @@ struct LMap {
     size_t maxPSL{0};
 
 private:
-    V *internal_try_put(K &key, V &val) {
-        u32 ndx = hash_func(key) % capacity;
+    V *internal_try_put(K key, V val) {
+        size_t ndx = hash_func(key) % capacity;
         for (size_t off = 0, p = 1; off < capacity; off++, p++) {
             Entry *entry = &table[ndx];
             if (entry->psl == 0) {

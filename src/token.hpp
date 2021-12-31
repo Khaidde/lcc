@@ -1,6 +1,8 @@
 #ifndef LCC_LEXER_HPP
 #define LCC_LEXER_HPP
 
+#include <cstdint>
+
 #include "file.hpp"
 #include "lstring.hpp"
 
@@ -81,7 +83,7 @@ struct Token {
     size_t len;
 
     union {
-        u16 intVal;
+        uint16_t intVal;
 
         LStringView str;
         LStringView ident;
@@ -89,7 +91,7 @@ struct Token {
 };
 
 struct Lexer {
-    file::FileInfo *finfo;
+    FileInfo *finfo;
 
     size_t line{1};
     size_t curI{0};
@@ -98,8 +100,11 @@ struct Lexer {
 };
 
 bool is_eof(Lexer *l);
+
 bool is_whitespace(char c);
+
 Token *lex_next(Lexer *l);
+
 Token *lex_peek(Lexer *l);
 
 }  // namespace lcc

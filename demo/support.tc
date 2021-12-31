@@ -1,5 +1,6 @@
 import "io"
 
-runtime_func = :(text: string) {}
+runtime_func := :(text: string) {}
 
-test2 = io
+dupTest := 4
+oaa : *u16

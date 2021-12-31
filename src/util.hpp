@@ -5,17 +5,10 @@
 #include <cstdint>
 
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-static_assert(0 && "Big endian compilation not supported");
+static_assert(false && "Big endian compilation not supported");
 #endif
 
 namespace lcc {
-
-using u64 = uint64_t;
-using u32 = uint32_t;
-using u16 = uint16_t;
-using u8 = uint8_t;
-
-using s32 = int32_t;
 
 constexpr int comp_strcmp(char const *a, char const *b) {
     return (*a != *b || *a == '\0') ? *a - *b : comp_strcmp(a + 1, b + 1);

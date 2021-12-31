@@ -3,15 +3,11 @@
 
 #include "list.hpp"
 #include "lstring.hpp"
+#include "types.hpp"
 
 namespace lcc::file {
 
-struct FileInfo {
-    const char *path;
-    LString src;
-};
-
-enum class FileErrCode : unsigned char {
+enum class FileErrCode {
     kSuccess,
     kNotFound,
     kInternalError,

@@ -1,4 +1,4 @@
 
-print = :(out: u16) {
+print := :(out: string) {
   // TODO: print
 }

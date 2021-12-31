@@ -1,15 +1,13 @@
-#ifndef LCC_ASTNODE_HPP
-#define LCC_ASTNODE_HPP
+#ifndef LCC_AST_HPP
+#define LCC_AST_HPP
 
-#include "hashmap.hpp"
-#include "lexer.hpp"
+#include <cstdint>
+
 #include "list.hpp"
-#include "scope.hpp"
+#include "lstring.hpp"
+#include "token.hpp"
 
 namespace lcc {
-
-struct Type;
-struct Node;
 
 enum class TypeKind {
     kNone,
@@ -24,6 +22,9 @@ enum class BaseTypeKind {
 };
 
 const char *base_type_string(BaseTypeKind kind);
+
+struct Type;
+struct Node;
 
 struct BaseType {
     BaseTypeKind kind;
@@ -58,7 +59,6 @@ extern Type string;
 }  // namespace builtin_type
 
 enum class NodeKind {
-    kUnit,
     kImport,
     kDecl,
     kType,
@@ -75,11 +75,6 @@ enum class NodeKind {
     kRet,
 };
 
-struct UnitNode {
-    LMap<LStringView, Node *, lstr_hash, lstr_equal> imports;
-    LList<Node *> decls;
-};
-
 struct ImportNode {
     LStringView alias;
     LStringView package;
@@ -90,16 +85,17 @@ struct DeclNode {
     Node *staticTy;
     Node *rval;
 
-    Type *resolvedTy;
-    bool isDecl;
-    bool isChecked;
-
-    struct Package *package;
     struct File *file;
+
+    Type *resolvedTy;
+
+    bool isDecl : 1;
+    bool isVisited : 1;
+    bool isBound : 1;
 };
 
 struct IntLitNode {
-    u16 intVal;
+    uint16_t intVal;
 };
 
 struct StrLitNode {
@@ -108,6 +104,7 @@ struct StrLitNode {
 
 struct NameNode {
     LStringView ident;
+    Node *ref;
 };
 
 struct PrefixNode {
@@ -157,7 +154,6 @@ struct Node {
     size_t endI;
 
     union {
-        UnitNode unit;
         ImportNode import;
         DeclNode decl;
         Type type;

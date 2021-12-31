@@ -1,9 +1,6 @@
-#include "lexer.hpp"
-
-#include <cstdarg>
+#include "token.hpp"
 
 #include "diagnostic.hpp"
-#include "util.hpp"
 
 namespace lcc {
 
@@ -25,6 +22,7 @@ Token *create_token(Lexer *l, TokenType type) {
 
 Token *create_str_literal_token(Lexer *l) {
     l->curToken.type = TokenType::kStrLiteral;
+    l->curToken.line = l->line;
     l->curToken.str = lstr_view(l->finfo->src.data, l->curI + 1, l->curLen - 2);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
@@ -34,6 +32,7 @@ Token *create_str_literal_token(Lexer *l) {
 
 Token *create_ident_token(Lexer *l) {
     l->curToken.type = TokenType::kIdent;
+    l->curToken.line = l->line;
     l->curToken.ident = lstr_view(l->finfo->src.data, l->curI, l->curLen);
     l->curToken.startI = l->curI;
     l->curToken.len = l->curLen;
@@ -144,9 +143,9 @@ Token *create_overflow_token(Lexer *l) {
     return ret_err(l);
 }
 
-Token *lex_create_int_literal(Lexer *l, bool pos, u32 val) {
+Token *lex_create_int_literal(Lexer *l, bool pos, uint16_t val) {
     Token *rv = create_token(l, TokenType::kIntLiteral);
-    rv->intVal = pos ? (u16)val : -(u16)val;
+    rv->intVal = pos ? val : -val;
     return rv;
 }
 
@@ -157,7 +156,7 @@ Token *lex_binary(Lexer *l, bool pos) {
         dx_err(curr(l), "Invalid binary digit: %c\n", digit);
         return ret_err(l);
     }
-    u32 val = 0;
+    uint64_t val = 0;
     while (char c = peek_char(l)) {
         if (!is_bindigit(c) && is_number(c)) {
             char digit = peek_char(l);
@@ -182,16 +181,16 @@ Token *lex_hexadecimal(Lexer *l, bool pos) {
         dx_err(curr(l), "Invalid hexadecimal digit: %c\n", digit);
         return ret_err(l);
     }
-    u32 val = 0;
+    uint64_t val = 0;
     while (char c = peek_char(l)) {
         if (!c || !is_hexdigit_or_underscore(c)) break;
         l->curLen++;
         if (c != '_') {
             val <<= 4;
             if (c <= '9') {
-                val |= (u8)(c - '0');
+                val |= (unsigned)(c - '0');
             } else {
-                val |= (u8)(c - (c <= 'F' ? 'A' : 'a')) + 0xA;
+                val |= (unsigned)(c - (c <= 'F' ? 'A' : 'a')) + 0xA;
             }
             if (val & 0xF0000) return create_overflow_token(l);
         }
@@ -200,12 +199,12 @@ Token *lex_hexadecimal(Lexer *l, bool pos) {
 }
 
 Token *lex_decimal(Lexer *l, bool pos) {
-    u32 val = 0;
+    uint64_t val = 0;
     while (char c = peek_char(l)) {
         if (!c || !is_number_or_underscore(c)) break;
         l->curLen++;
         if (c != '_') {
-            val = val * 10 + (u8)(c - '0');
+            val = val * 10 + (unsigned)(c - '0');
             if ((pos && val > 0x7FFF) || (!pos && val > 0x8000)) {
                 return create_overflow_token(l);
             }
@@ -329,7 +328,8 @@ Token *lex_next(Lexer *l) {
             if (is_letter_or_underscore(c)) return lex_keyword_or_ident(l);
             if (is_number(c)) return lex_integer(l);
 
-            dx_err(curr(l), "Unexpected character[%d]: '%c'\n", l->line, c);
+            l->curLen++;
+            dx_err(curr(l), "Unknown character: '%c'\n", c);
             return ret_err(l);
     }
 }

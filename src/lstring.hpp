@@ -1,7 +1,7 @@
-
 #ifndef LCC_LSTRING_HPP
 #define LCC_LSTRING_HPP
 
+#include <cstdint>
 #include <cstring>
 
 #include "list.hpp"
@@ -31,7 +31,7 @@ void lstr_cat(LString &dest, LStringView &view);
 
 LStringView lstr_view(const char *str, size_t off, size_t len);
 
-u32 lstr_hash(LStringView &str);
+uint32_t lstr_hash(LStringView &str);
 
 bool lstr_equal(LStringView &str1, LStringView &str2);
 

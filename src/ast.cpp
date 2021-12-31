@@ -1,4 +1,4 @@
-#include "astnode.hpp"
+#include "ast.hpp"
 
 #include "print.hpp"
 
@@ -50,50 +50,58 @@ const char *type_string(Type *type) {
 
 namespace {
 
+void print_location(File *file, Node *node) {
+    size_t line = 1;
+    size_t col = 0;
+    size_t ndx = 0;
+    while (ndx < node->startI) {
+        col++;
+        if (ndx < file->finfo->src.size && file->finfo->src.get(ndx) == '\n') {
+            col = 0;
+            line++;
+        }
+        ndx++;
+    }
+    printf("%d:%d", line, col);
+}
+
 void r_print_ast(Node *node, size_t depth) {
     print_color(kAnsiColorGreen);
     printf("%0*s%s", depth * 2, "", node_kind_string(node->kind));
     reset_print_color();
     switch (node->kind) {
-        case NodeKind::kUnit:
-            printf("\n");
-            for (size_t i = 0; i < node->unit.imports.capacity; i++) {
-                if (node->unit.imports.table[i].psl) {
-                    r_print_ast(node->unit.imports.table[i].val, depth + 1);
-                }
-            }
-            for (size_t i = 0; i < node->unit.decls.size; i++) {
-                r_print_ast(node->unit.decls.get(i), depth + 1);
-            }
-            break;
         case NodeKind::kImport:
             print_color(kAnsiColorBlue);
-            printf(" '%s'", lstr_raw_str(node->import.package));
-            if (node->import.alias.src) {
-                printf(" as %s", lstr_raw_str(node->import.alias));
-            }
-            printf("\n");
+            printf(" '%s' as %s\n", lstr_raw_str(node->import.package), lstr_raw_str(node->import.alias));
             reset_print_color();
             break;
         case NodeKind::kDecl:
-            print_color(kAnsiColorMagenta);
-            printf(" <%s>", node->decl.isDecl ? "declare" : "assign");
-            reset_print_color();
+            print_color(kAnsiColorGrey);
 
-            printf(":");
+            print_color(kAnsiColorMagenta);
+            if (node->decl.isDecl) {
+                printf(" <declare");
+                if (node->decl.file) {
+                    printf(":");
+                    print_location(node->decl.file, node);
+                    printf(":%s", node->decl.file->finfo->path);
+                }
+                printf(">");
+            } else {
+                printf(" <assign>");
+            }
 
             if (node->decl.resolvedTy) {
                 print_color(kAnsiColorYellow);
-                printf("'%s'", type_string(node->decl.resolvedTy));
-                reset_print_color();
+                printf(" '%s'", type_string(node->decl.resolvedTy));
             } else if (node->decl.staticTy) {
                 print_color(kAnsiColorRed);
-                printf("'%s'", type_string(&node->decl.staticTy->type));
-                reset_print_color();
-            } else {
-                printf("unknown");
+                printf(" '%s'", type_string(&node->decl.staticTy->type));
+            } else if (node->decl.isDecl) {
+                printf(" unknown");
             }
             printf("\n");
+            reset_print_color();
 
             r_print_ast(node->decl.lval, depth + 1);
             if (node->decl.rval) r_print_ast(node->decl.rval, depth + 1);
@@ -115,7 +123,15 @@ void r_print_ast(Node *node, size_t depth) {
             break;
         case NodeKind::kName:
             print_color(kAnsiColorBlue);
-            printf(" '%.*s'\n", node->name.ident.len, node->name.ident.src);
+            printf(" '%.*s'", node->name.ident.len, node->name.ident.src);
+            if (node->name.ref) {
+                File *refFile = node->name.ref->decl.file;
+                print_color(kAnsiColorGrey);
+                printf(" <%s:", refFile->finfo->path);
+                print_location(refFile, node->name.ref);
+                printf(">");
+            }
+            printf("\n");
             reset_print_color();
             break;
         case NodeKind::kPrefix:
@@ -187,7 +203,6 @@ void r_print_ast(Node *node, size_t depth) {
 
 const char *node_kind_string(NodeKind kind) {
     switch (kind) {
-        case NodeKind::kUnit: return "Unit";
         case NodeKind::kImport: return "Import";
         case NodeKind::kDecl: return "Decl";
         case NodeKind::kType: return "Type";

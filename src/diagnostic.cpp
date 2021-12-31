@@ -10,7 +10,7 @@ DxInfo curr(Lexer *l) { return {l->finfo, l->line, l->curI, l->curLen}; }
 
 DxInfo at_eof(Lexer *l) {
     size_t ndx = l->finfo->src.size - 1;
-    u32 line = l->line;
+    size_t line = l->line;
     while (ndx >= 0) {
         if (!is_whitespace(l->finfo->src.get(ndx))) break;
         if (l->finfo->src.get(ndx) == '\n') line--;
@@ -19,11 +19,11 @@ DxInfo at_eof(Lexer *l) {
     return {l->finfo, line, ndx + 1, 1};
 }
 
-DxInfo at_point(file::FileInfo *finfo, size_t startI) { return {finfo, (size_t)-1, startI, 1}; }
+DxInfo at_point(FileInfo *finfo, size_t startI) { return {finfo, (size_t)-1, startI, 1}; }
 
-DxInfo at_token(file::FileInfo *finfo, Token *token) { return {finfo, token->line, token->startI, token->len}; }
+DxInfo at_token(FileInfo *finfo, Token *token) { return {finfo, token->line, token->startI, token->len}; }
 
-DxInfo at_node(file::FileInfo *finfo, Node *node) {
+DxInfo at_node(FileInfo *finfo, Node *node) {
     size_t depth = 0;
     size_t ndx = node->endI;
     while (ndx > node->startI) {
@@ -54,7 +54,7 @@ void dx_out(DxInfo &dxinfo) {
     // Print file path if it exists
     if (dxinfo.finfo->path) {
         print_color(kAnsiColorGrey);
-        printf("  %s:\n", dxinfo.finfo->path);
+        printf("  in %s:\n", dxinfo.finfo->path);
         reset_print_color();
     }
 
@@ -89,12 +89,11 @@ void dx_out(DxInfo &dxinfo) {
     back = (back + 1) % numContextLines;
 
     // Print context lines including the error line
-    int ctxLine = line - numContextLines + 1;
-    for (int i = 0; i < numContextLines; i++) {
+    for (size_t i = 0; i < numContextLines; i++) {
         LStringView &curLine = lines[back];
         back = (back + 1) % numContextLines;
 
-        int curLineNum = ctxLine + i;
+        int curLineNum = line - numContextLines + 1 + i;
         if (curLineNum >= 1) printf("  %4d %.*s\n", curLineNum, curLine.len, curLine.src);
     }
 
@@ -103,7 +102,7 @@ void dx_out(DxInfo &dxinfo) {
 };
 }  // namespace
 
-u8 numContextLines = 3;
+size_t numContextLines = 3;
 
 void dx_err(DxInfo dxinfo, const char *format, ...) {
     dx_out(dxinfo);

@@ -1,12 +1,11 @@
 #ifndef LCC_PARSE_HPP
 #define LCC_PARSE_HPP
 
-#include "astnode.hpp"
-#include "lexer.hpp"
+#include "types.hpp"
 
 namespace lcc {
 
-Node *parse_unit(Lexer *l);
+Result parse_file(File *file);
 
 }  // namespace lcc
 
