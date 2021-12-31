@@ -267,7 +267,7 @@ ErrCode compile(const char *path) {
     info("Compiling %s ...\n", file->finfo->path);
 
     // Semantic analysis of the file
-    cmp.file = file;
+    cmp.currFile = file;
     if (analyze_file(&cmp)) return ErrCode::kFailure;
 
     pkg = *cmp.packageMap.get(root);

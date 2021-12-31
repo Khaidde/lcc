@@ -24,7 +24,6 @@ enum class BaseTypeKind {
 const char *base_type_string(BaseTypeKind kind);
 
 struct Type;
-struct Node;
 
 struct BaseType {
     BaseTypeKind kind;
@@ -74,6 +73,8 @@ enum class NodeKind {
     kWhile,
     kRet,
 };
+
+struct Node;
 
 struct ImportNode {
     LStringView alias;
@@ -131,12 +132,14 @@ struct FuncNode {
 
 struct BlockNode {
     LList<Node *> stmts;
+    bool hasBranch;
 };
 
 struct IfNode {
     Node *cond;
     Node *then;
     Node *alt;
+    bool isTerminal;
 };
 
 struct WhileNode {
@@ -146,6 +149,7 @@ struct WhileNode {
 
 struct RetNode {
     Node *value;
+    Type *resolvedTy;
 };
 
 struct Node {

@@ -42,7 +42,8 @@ struct CompilationContext {
         Node *func;
     };
     LList<FunctionCtx> resolveFuncBodyStack;
-    File *file;
+    Node *currFunction;
+    File *currFile;
 };
 
 }  // namespace lcc

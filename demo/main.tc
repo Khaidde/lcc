@@ -27,36 +27,28 @@ impl + for u8 = :(other: u8) => #add(self, other, 8)
 u16.+ = :(b: u16) => #add(self, b, 16)
 */
 
-val := 2
-main := :() {
-  i := 0b101
-  dupTest = 9
-  val = math.area_sphere(3)
-  a := 2
-  e2 : u16 = 2
-  @oaa = 3
-  {
-    i = 4
-    ptri := *i
-  }
-  {
-    ptri := 2
-  }
-  other := :(a: u16, b: u16) {
-    i := a + b
-    val = a
-  }
+main := :() -> string {
   io.print("rand")
-  if i {
+  i := 2
+
+
+  if i + i {
     i = 2
+    ret "asdf"
   } else if i - 1 {
     i = 3
+    ret "asdf"
   } else {
     i = 4
+    if i {
+      ret "asdf"
+    } else {
+      ret "asdf"
+    }
   }
+  ret "asdf"
 }
-
-// test = math.mult(3, 4)
+val := 2
 
 /*
 callCallback = :(callback: (u16, u16) -> u16) -> string {

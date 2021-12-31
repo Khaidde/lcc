@@ -363,6 +363,10 @@ Node *parse_operand(Lexer *l) {
             end_node(l, func);
             return func;
         }
+        case TokenType::kIf:
+        case TokenType::kWhile:
+            dx_err(at_token(l->finfo, tkn), "%s not allowed here\n", token_type_string(tkn->type));
+            return nullptr;
         case TokenType::kEof: dx_err(at_eof(l), "Expected an operand but reached end of file\n");
         case TokenType::kErr: return nullptr;
         default:
@@ -447,6 +451,7 @@ Node *parse_expr(Lexer *l) { return parse_infix(l, kLowPrecedence, parse_operand
 Node *parse_if(Lexer *l) {
     assert(check_peek(l, TokenType::kIf));
     Node *ifstmt = create_node(l, NodeKind::kIf);
+    ifstmt->ifstmt.isTerminal = false;
     lex_next(l);  // next if
 
     ifstmt->ifstmt.cond = parse_expr(l);
@@ -501,6 +506,7 @@ Node *parse_block(Lexer *l) {
     assert(check_peek(l, TokenType::kLCurl));
     Node *block = create_node(l, NodeKind::kBlock);
     block->block.stmts = {};
+    block->block.hasBranch = false;
     lex_next(l);  // next {
 
     for (;;) {

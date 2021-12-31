@@ -1,6 +1,3 @@
 import "io"
 
 runtime_func := :(text: string) {}
-
-dupTest := 4
-oaa : *u16

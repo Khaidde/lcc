@@ -159,7 +159,7 @@ void r_print_ast(Node *node, size_t depth) {
             break;
         case NodeKind::kFunc:
             if (node->func.retTy) {
-                print_color(kAnsiColorRed);
+                print_color(kAnsiColorYellow);
                 printf(" '%s'", type_string(&node->func.retTy->type));
                 reset_print_color();
             }
@@ -171,6 +171,11 @@ void r_print_ast(Node *node, size_t depth) {
             r_print_ast(node->func.body, depth + 1);
             break;
         case NodeKind::kBlock:
+            if (node->block.hasBranch) {
+                print_color(kAnsiColorMagenta);
+                printf(" <hasBranch>");
+                reset_print_color();
+            }
             printf("\n");
 
             for (size_t i = 0; i < node->block.stmts.size; i++) {
@@ -178,6 +183,11 @@ void r_print_ast(Node *node, size_t depth) {
             }
             break;
         case NodeKind::kIf:
+            if (node->ifstmt.isTerminal) {
+                print_color(kAnsiColorMagenta);
+                printf(" <isTerminal>");
+                reset_print_color();
+            }
             printf("\n");
 
             r_print_ast(node->ifstmt.cond, depth + 1);
@@ -191,7 +201,13 @@ void r_print_ast(Node *node, size_t depth) {
             r_print_ast(node->whilestmt.loop, depth + 1);
             break;
         case NodeKind::kRet:
+            if (node->ret.resolvedTy) {
+                print_color(kAnsiColorYellow);
+                printf(" '%s'", type_string(node->ret.resolvedTy));
+                reset_print_color();
+            }
             printf("\n");
+
             if (node->ret.value) {
                 r_print_ast(node->ret.value, depth + 1);
             }
