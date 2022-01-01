@@ -72,6 +72,8 @@ enum class NodeKind {
     kIf,
     kWhile,
     kRet,
+    kBreak,
+    kCont,
 };
 
 struct Node;
@@ -132,24 +134,29 @@ struct FuncNode {
 
 struct BlockNode {
     LList<Node *> stmts;
-    bool hasBranch;
+    size_t branchLevel;
 };
 
 struct IfNode {
     Node *cond;
     Node *then;
     Node *alt;
-    bool isTerminal;
+    size_t branchLevel;
 };
 
 struct WhileNode {
     Node *cond;
     Node *loop;
+    size_t branchLevel;
 };
 
 struct RetNode {
     Node *value;
     Type *resolvedTy;
+};
+
+struct BreakNode {
+    LStringView label;
 };
 
 struct Node {
@@ -172,6 +179,7 @@ struct Node {
         IfNode ifstmt;
         WhileNode whilestmt;
         RetNode ret;
+        BreakNode brk;
     };
 };
 

@@ -10,7 +10,7 @@ namespace lcc {
 namespace {
 
 Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
-    scope_enter(cmp->scopeStack, true);
+    scope_enter(cmp->scopeStack, func);
     for (size_t i = 0; i < func->func.params.size; i++) {
         Node *param = func->func.params.get(i);
         param->decl.file = cmp->currFile;
@@ -27,12 +27,13 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
 Result analyze_function_bodies(CompilationContext *cmp);
 
 Node *decl_lookup(CompilationContext *cmp, LStringView &symbol) {
-    for (size_t i = cmp->scopeStack->size; i > 0; i--) {
-        Scope *scope = cmp->scopeStack->scopes.get(i - 1);
+    for (size_t i = scope_depth(cmp->scopeStack);; i--) {
+        Scope *scope = cmp->scopeStack->scopes.get(i);
         if (Node **decl = scope->decls.get(symbol)) {
             return *decl;
         }
-        if (scope->isClosed) break;
+        if (scope->owner->kind == NodeKind::kFunc) break;
+        if (i == 0) break;
     }
     if (Node **globalDecl = cmp->currFile->package->globalDecls.get(symbol)) {
         return *globalDecl;
@@ -342,36 +343,60 @@ Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
                "If statement condition expected to be a numeric type\n");
         return Result::kError;
     }
-    scope_enter(cmp->scopeStack, false);
+
+    scope_enter(cmp->scopeStack, ifstmt);
     if (analyze_block(cmp, ifstmt->ifstmt.then)) return Result::kError;
-    scope_exit(cmp->scopeStack);
     if (ifstmt->ifstmt.alt) {
-        if (ifstmt->ifstmt.then->block.hasBranch) {
-            if (ifstmt->ifstmt.alt->kind == NodeKind::kIf) {
-                if (analyze_if(cmp, ifstmt->ifstmt.alt)) return Result::kError;
-                ifstmt->ifstmt.isTerminal = ifstmt->ifstmt.alt->ifstmt.isTerminal;
-            } else if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
-                scope_enter(cmp->scopeStack, false);
-                if (analyze_block(cmp, ifstmt->ifstmt.alt)) return Result::kError;
-                scope_exit(cmp->scopeStack);
-                ifstmt->ifstmt.isTerminal = ifstmt->ifstmt.alt->block.hasBranch;
-            } else {
-                assert(false && "Alt field of ifstmt should either be a block or another if statement");
+        scope_exit(cmp->scopeStack);
+
+        ifstmt->ifstmt.branchLevel = ifstmt->ifstmt.then->block.branchLevel;
+        if (ifstmt->ifstmt.alt->kind == NodeKind::kIf) {
+            if (analyze_if(cmp, ifstmt->ifstmt.alt)) return Result::kError;
+            if (ifstmt->ifstmt.alt->ifstmt.branchLevel > ifstmt->ifstmt.branchLevel) {
+                ifstmt->ifstmt.branchLevel = ifstmt->ifstmt.alt->ifstmt.branchLevel;
             }
+        } else if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
+            scope_enter(cmp->scopeStack, ifstmt);
+            if (analyze_block(cmp, ifstmt->ifstmt.alt)) return Result::kError;
+            scope_exit(cmp->scopeStack);
+            if (ifstmt->ifstmt.alt->block.branchLevel > ifstmt->ifstmt.branchLevel) {
+                ifstmt->ifstmt.branchLevel = ifstmt->ifstmt.alt->block.branchLevel;
+            }
+        } else {
+            assert(false && "Alt field of ifstmt should either be a block or another if statement");
         }
     } else {
-        ifstmt->ifstmt.isTerminal = false;
+        ifstmt->ifstmt.branchLevel = scope_depth(cmp->scopeStack);
+        scope_exit(cmp->scopeStack);
+    }
+    return Result::kAccept;
+}
+
+Result analyze_while(CompilationContext *cmp, Node *whilestmt) {
+    Type *condType = resolve_type(cmp, whilestmt->whilestmt.cond);
+    if (!condType) return Result::kError;
+    if (!is_numeric_type(condType)) {
+        dx_err(at_node(cmp->currFile->finfo, whilestmt->whilestmt.cond),
+               "While statement condition expected to be a numeric type\n");
+        return Result::kError;
     }
 
+    scope_enter(cmp->scopeStack, whilestmt);
+    if (analyze_block(cmp, whilestmt->whilestmt.loop)) return Result::kError;
+    whilestmt->whilestmt.branchLevel = whilestmt->whilestmt.loop->block.branchLevel;
+    scope_exit(cmp->scopeStack);
     return Result::kAccept;
 }
 
 Result analyze_block(CompilationContext *cmp, Node *block) {
     assert(block->kind == NodeKind::kBlock);
+    // +1 so that if there is no modification to branchLevel (no returns, breaks, etc)
+    // block will not "break out of itself". The algorithm checks out ;)
+    block->block.branchLevel = scope_depth(cmp->scopeStack) + 1;
 
     for (size_t i = 0; i < block->block.stmts.size; i++) {
         Node *stmt = block->block.stmts.get(i);
-        if (block->block.hasBranch) {
+        if (block->block.branchLevel <= scope_depth(cmp->scopeStack)) {
             dx_err(at_node(cmp->currFile->finfo, stmt), "Unreachable code\n");
             return Result::kError;
         }
@@ -380,16 +405,26 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 if (analyze_decl(cmp, stmt)) return Result::kError;
                 break;
             case NodeKind::kBlock:
-                scope_enter(cmp->scopeStack, false);
+                scope_enter(cmp->scopeStack, stmt);
                 if (analyze_block(cmp, stmt)) return Result::kError;
                 scope_exit(cmp->scopeStack);
+                if (stmt->block.branchLevel < block->block.branchLevel) {
+                    block->block.branchLevel = stmt->block.branchLevel;
+                }
                 break;
             case NodeKind::kIf:
                 if (analyze_if(cmp, stmt)) return Result::kError;
-                if (stmt->ifstmt.isTerminal) block->block.hasBranch = true;
+                if (stmt->ifstmt.branchLevel < block->block.branchLevel) {
+                    block->block.branchLevel = stmt->ifstmt.branchLevel;
+                }
                 break;
-            case NodeKind::kWhile: todo("While statement analysis\n"); break;
-            case NodeKind::kRet: {
+            case NodeKind::kWhile:
+                if (analyze_while(cmp, stmt)) return Result::kError;
+                if (stmt->whilestmt.branchLevel < block->block.branchLevel) {
+                    block->block.branchLevel = stmt->whilestmt.branchLevel;
+                }
+                break;
+            case NodeKind::kRet:
                 if (stmt->ret.value) {
                     stmt->ret.resolvedTy = resolve_type(cmp, stmt->ret.value);
                     if (!stmt->ret.resolvedTy) return Result::kError;
@@ -417,9 +452,36 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                         return Result::kError;
                     }
                 }
-                block->block.hasBranch = true;
+                for (size_t i = scope_depth(cmp->scopeStack);; i--) {
+                    Scope *scope = cmp->scopeStack->scopes.get(i);
+                    if (scope->owner->kind == NodeKind::kFunc) {
+                        block->block.branchLevel = i;
+                        break;
+                    }
+                    if (i == 0) assert(false);
+                }
                 break;
-            }
+            case NodeKind::kBreak:
+                if (stmt->brk.label.src) {
+                    todo("Implement break with label...\n");
+                    return Result::kError;
+                }
+                [[fallthrough]];
+            case NodeKind::kCont:
+                for (size_t i = scope_depth(cmp->scopeStack);; i--) {
+                    Scope *scope = cmp->scopeStack->scopes.get(i);
+                    if (scope->owner->kind == NodeKind::kWhile) {
+                        block->block.branchLevel = i;
+                        break;
+                    }
+                    if (scope->owner->kind == NodeKind::kFunc) {
+                        dx_err(at_node(cmp->currFile->finfo, stmt), "%s statement must be inside a loop\n",
+                               node_kind_string(stmt->kind));
+                        return Result::kError;
+                    }
+                    if (i == 0) assert(false);
+                }
+                break;
             default:
                 if (!resolve_type(cmp, stmt)) return Result::kError;
                 if (analyze_function_bodies(cmp)) return Result::kError;

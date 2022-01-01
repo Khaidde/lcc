@@ -43,7 +43,7 @@ Node *parse_import(Lexer *l) {
     if (tkn->type == TokenType::kIdent) {
         import->import.alias = tkn->ident;
 
-        lex_next(l);  // next ident
+        lex_next(l);  // next 'ident'
         if (check_peek(l, TokenType::kErr)) return nullptr;
         tkn = lex_peek(l);
     } else {
@@ -451,7 +451,7 @@ Node *parse_expr(Lexer *l) { return parse_infix(l, kLowPrecedence, parse_operand
 Node *parse_if(Lexer *l) {
     assert(check_peek(l, TokenType::kIf));
     Node *ifstmt = create_node(l, NodeKind::kIf);
-    ifstmt->ifstmt.isTerminal = false;
+    ifstmt->ifstmt.branchLevel = (size_t)-1;
     lex_next(l);  // next if
 
     ifstmt->ifstmt.cond = parse_expr(l);
@@ -486,6 +486,7 @@ Node *parse_if(Lexer *l) {
 Node *parse_while(Lexer *l) {
     assert(check_peek(l, TokenType::kWhile));
     Node *whilestmt = create_node(l, NodeKind::kWhile);
+    whilestmt->whilestmt.branchLevel = (size_t)-1;
     lex_next(l);  // next while
 
     whilestmt->whilestmt.cond = parse_expr(l);
@@ -506,7 +507,7 @@ Node *parse_block(Lexer *l) {
     assert(check_peek(l, TokenType::kLCurl));
     Node *block = create_node(l, NodeKind::kBlock);
     block->block.stmts = {};
-    block->block.hasBranch = false;
+    block->block.branchLevel = (size_t)-1;
     lex_next(l);  // next {
 
     for (;;) {
@@ -539,6 +540,7 @@ Node *parse_block(Lexer *l) {
                 break;
             case TokenType::kRet: {
                 Node *ret = create_node(l, NodeKind::kRet);
+                ret->ret.resolvedTy = nullptr;
                 lex_next(l);  // next ret
                 if (!check_peek(l, TokenType::kRCurl)) {
                     ret->ret.value = parse_expr(l);
@@ -548,6 +550,26 @@ Node *parse_block(Lexer *l) {
                 }
                 end_node(l, ret);
                 block->block.stmts.add(ret);
+                break;
+            }
+            case TokenType::kBreak: {
+                Node *brk = create_node(l, NodeKind::kBreak);
+                lex_next(l);  // next break
+                if (check_peek(l, TokenType::kIdent)) {
+                    brk->brk.label = lex_peek(l)->ident;
+                    lex_next(l);  // next 'ident'
+                } else {
+                    brk->brk.label.src = nullptr;
+                }
+                end_node(l, brk);
+                block->block.stmts.add(brk);
+                break;
+            }
+            case TokenType::kCont: {
+                Node *cont = create_node(l, NodeKind::kCont);
+                lex_next(l);  // next continue
+                end_node(l, cont);
+                block->block.stmts.add(cont);
                 break;
             }
             case TokenType::kEof:

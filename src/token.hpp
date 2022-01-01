@@ -37,6 +37,8 @@ enum class TokenType {
     kElse,
     kWhile,
     kRet,
+    kBreak,
+    kCont,
     kEof,
     kErr,
 };
@@ -71,6 +73,8 @@ constexpr const char *token_type_string(TokenType type) {
         case TokenType::kElse: return "else";
         case TokenType::kWhile: return "while";
         case TokenType::kRet: return "ret";
+        case TokenType::kBreak: return "break";
+        case TokenType::kCont: return "continue";
         case TokenType::kEof: return "'eof'";
         case TokenType::kErr: return "'error'";
     }

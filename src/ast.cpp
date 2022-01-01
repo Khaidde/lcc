@@ -171,10 +171,8 @@ void r_print_ast(Node *node, size_t depth) {
             r_print_ast(node->func.body, depth + 1);
             break;
         case NodeKind::kBlock:
-            if (node->block.hasBranch) {
-                print_color(kAnsiColorMagenta);
-                printf(" <hasBranch>");
-                reset_print_color();
+            if (node->block.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
+                printf(" %d", node->block.branchLevel);
             }
             printf("\n");
 
@@ -183,10 +181,8 @@ void r_print_ast(Node *node, size_t depth) {
             }
             break;
         case NodeKind::kIf:
-            if (node->ifstmt.isTerminal) {
-                print_color(kAnsiColorMagenta);
-                printf(" <isTerminal>");
-                reset_print_color();
+            if (node->block.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
+                printf(" %d", node->block.branchLevel);
             }
             printf("\n");
 
@@ -195,6 +191,9 @@ void r_print_ast(Node *node, size_t depth) {
             if (node->ifstmt.alt) r_print_ast(node->ifstmt.alt, depth + 1);
             break;
         case NodeKind::kWhile:
+            if (node->block.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
+                printf(" %d", node->block.branchLevel);
+            }
             printf("\n");
 
             r_print_ast(node->whilestmt.cond, depth + 1);
@@ -212,6 +211,15 @@ void r_print_ast(Node *node, size_t depth) {
                 r_print_ast(node->ret.value, depth + 1);
             }
             break;
+        case NodeKind::kBreak:
+            if (node->brk.label.src) {
+                print_color(kAnsiColorYellow);
+                printf(" %s", lstr_raw_str(node->brk.label));
+                reset_print_color();
+            }
+            printf("\n");
+            break;
+        case NodeKind::kCont: printf("\n"); break;
     }
 }
 
@@ -233,6 +241,8 @@ const char *node_kind_string(NodeKind kind) {
         case NodeKind::kIf: return "If";
         case NodeKind::kWhile: return "While";
         case NodeKind::kRet: return "Ret";
+        case NodeKind::kBreak: return "Break";
+        case NodeKind::kCont: return "Continue";
     }
 }
 

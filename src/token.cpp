@@ -112,6 +112,8 @@ bool is_hexdigit_or_underscore(char c) { return is_hexdigit(c) || c == '_'; }
 
 // clang-format off
 constexpr TokenType kKeywords[]{
+    TokenType::kBreak,
+    TokenType::kCont,
     TokenType::kElse,
     TokenType::kIf,
     TokenType::kImport,

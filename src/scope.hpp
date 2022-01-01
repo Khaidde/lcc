@@ -11,7 +11,7 @@ namespace lcc {
 
 struct Scope {
     LMap<LStringView, Node *, lstr_hash, lstr_equal> decls;
-    bool isClosed;  // Can only access global declarations
+    Node *owner;
 };
 
 struct ScopeStack {
@@ -21,7 +21,9 @@ struct ScopeStack {
 
 ScopeStack *scope_init();
 
-void scope_enter(ScopeStack *stack, bool isClosed);
+size_t scope_depth(ScopeStack *stack);
+
+void scope_enter(ScopeStack *stack, Node *owner);
 
 void scope_exit(ScopeStack *stack);
 

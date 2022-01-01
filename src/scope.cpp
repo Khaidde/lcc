@@ -9,10 +9,12 @@ ScopeStack *scope_init() {
     return table;
 }
 
-void scope_enter(ScopeStack *stack, bool isClosed) {
+size_t scope_depth(ScopeStack *stack) { return stack->size - 1; }
+
+void scope_enter(ScopeStack *stack, Node *owner) {
     Scope *scope = mem::malloc<Scope>();
     scope->decls.init();
-    scope->isClosed = isClosed;
+    scope->owner = owner;
     if (stack->size >= stack->scopes.size) {
         stack->scopes.add(scope);
     } else {
