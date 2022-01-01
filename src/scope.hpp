@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "ast.hpp"
+#include "list.hpp"
 #include "map.hpp"
 
 namespace lcc {
@@ -13,11 +14,9 @@ struct Scope {
     bool isClosed;  // Can only access global declarations
 };
 
-constexpr size_t kMaxScopeDepth = 8;
-
 struct ScopeStack {
     size_t size;
-    Scope scopes[kMaxScopeDepth];
+    LList<Scope *> scopes;
 };
 
 ScopeStack *scope_init();

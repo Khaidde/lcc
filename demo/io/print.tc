@@ -1,4 +1,6 @@
 
 print := :(out: string) {
+  if "asdf" {
+  }
   // TODO: print
 }

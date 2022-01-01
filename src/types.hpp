@@ -1,6 +1,8 @@
 #ifndef LCC_TYPES_HPP
 #define LCC_TYPES_HPP
 
+#include <cstdint>
+
 #include "list.hpp"
 #include "lstring.hpp"
 #include "map.hpp"
@@ -24,8 +26,6 @@ struct File {
     FileInfo *finfo;
 
     LMap<LStringView, Node *, lstr_hash, lstr_equal> imports;
-
-    struct ScopeStack *scopeStack;
 };
 
 struct Package {
@@ -37,11 +37,15 @@ struct CompilationContext {
     LMap<LStringView, Package *, lstr_hash, lstr_equal> packageMap;
     bool isPackageResolutionSuccesful;
 
+    struct ScopeStack *scopeStack;
+
     struct FunctionCtx {
         File *file;
         Node *func;
+        bool isSeparator;
     };
     LList<FunctionCtx> resolveFuncBodyStack;
+    size_t currNumPendingFunc;
     Node *currFunction;
     File *currFile;
 };

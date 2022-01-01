@@ -10,14 +10,11 @@ namespace lcc {
 namespace {
 
 Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
-    if (!cmp->currFile->scopeStack) {
-        cmp->currFile->scopeStack = scope_init();
-    }
-    scope_enter(cmp->currFile->scopeStack, true);
+    scope_enter(cmp->scopeStack, true);
     for (size_t i = 0; i < func->func.params.size; i++) {
         Node *param = func->func.params.get(i);
         param->decl.file = cmp->currFile;
-        if (Node *other = scope_bind(cmp->currFile->scopeStack, param)) {
+        if (Node *other = scope_bind(cmp->scopeStack, param)) {
             dx_err(at_node(cmp->currFile->finfo, param->decl.lval), "Duplicate parameter name\n");
             dx_note(at_node(other->decl.file->finfo, other->decl.lval), "Previous parameter here\n");
             return Result::kError;
@@ -29,17 +26,13 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
 
 Result analyze_function_bodies(CompilationContext *cmp);
 
-Result resolve_decl_type(CompilationContext *cmp, Node *decl);
-
 Node *decl_lookup(CompilationContext *cmp, LStringView &symbol) {
-    if (cmp->currFile->scopeStack) {
-        for (int i = cmp->currFile->scopeStack->size - 1; i >= 0; i--) {
-            Scope &scope = cmp->currFile->scopeStack->scopes[i];
-            if (Node **decl = scope.decls.get(symbol)) {
-                return *decl;
-            }
-            if (scope.isClosed) break;
+    for (size_t i = cmp->scopeStack->size; i > 0; i--) {
+        Scope *scope = cmp->scopeStack->scopes.get(i - 1);
+        if (Node **decl = scope->decls.get(symbol)) {
+            return *decl;
         }
+        if (scope->isClosed) break;
     }
     if (Node **globalDecl = cmp->currFile->package->globalDecls.get(symbol)) {
         return *globalDecl;
@@ -137,6 +130,8 @@ Node *expand_dot_access(CompilationContext *cmp, Node *dotAccessRef) {
     return nullptr;
 }
 
+Result analyze_decl(CompilationContext *cmp, Node *decl);
+
 Type *resolve_expansion(CompilationContext *cmp, Node *original, Node *expansion) {
     if (expansion->kind == NodeKind::kImport) {
         dx_err(at_node(cmp->currFile->finfo, original), "Package alias cannot be used as a variable\n");
@@ -145,7 +140,7 @@ Type *resolve_expansion(CompilationContext *cmp, Node *original, Node *expansion
     assert(expansion->kind == NodeKind::kDecl);
     File *save = cmp->currFile;
     cmp->currFile = expansion->decl.file;
-    if (resolve_decl_type(cmp, expansion)) return nullptr;
+    if (analyze_decl(cmp, expansion)) return nullptr;
     cmp->currFile = save;
     return expansion->decl.resolvedTy;
 }
@@ -284,20 +279,17 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
             }
             if (expr->func.retTy) {
                 funcTy->func.retTy = &expr->func.retTy->type;
-                cmp->resolveFuncBodyStack.add({cmp->currFile, expr});
+                cmp->resolveFuncBodyStack.add({cmp->currFile, expr, false});
+                cmp->currNumPendingFunc++;
             } else if (expr->func.body->kind == NodeKind::kBlock) {
                 funcTy->func.retTy = &builtin_type::none;
-                cmp->resolveFuncBodyStack.add({cmp->currFile, expr});
+                cmp->resolveFuncBodyStack.add({cmp->currFile, expr, false});
+                cmp->currNumPendingFunc++;
             } else {
-                // FIXME: multiple single line functions in one file global scope which
-                // depend on each other(forward declarations) will cause scope to expand and potentially exceed
-                // limit. Solution that's not very appealing: each declaration has its own scopeStack Other
-                // Solution: scopeStack is defined as a dynamic list of scopes (no limit on scope depth) Note: hairy
-                // because single line functions may need to be type inferred
                 if (scope_enter_func_bind_params(cmp, expr)) return nullptr;
                 funcTy->func.retTy = resolve_type(cmp, expr->func.body);
                 if (!funcTy->func.retTy) return nullptr;
-                scope_exit(cmp->currFile->scopeStack);
+                scope_exit(cmp->scopeStack);
             }
             return funcTy;
         }
@@ -340,8 +332,6 @@ Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
     return Result::kAccept;
 }
 
-Result analyze_decl(CompilationContext *cmp, Node *decl);
-
 Result analyze_block(CompilationContext *cmp, Node *block);
 
 Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
@@ -352,16 +342,22 @@ Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
                "If statement condition expected to be a numeric type\n");
         return Result::kError;
     }
+    scope_enter(cmp->scopeStack, false);
     if (analyze_block(cmp, ifstmt->ifstmt.then)) return Result::kError;
+    scope_exit(cmp->scopeStack);
     if (ifstmt->ifstmt.alt) {
-        if (ifstmt->ifstmt.alt->kind == NodeKind::kIf) {
-            if (analyze_if(cmp, ifstmt->ifstmt.alt)) return Result::kError;
-            ifstmt->ifstmt.isTerminal = ifstmt->ifstmt.alt->ifstmt.isTerminal;
-        } else if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
-            if (analyze_block(cmp, ifstmt->ifstmt.alt)) return Result::kError;
-            ifstmt->ifstmt.isTerminal = ifstmt->ifstmt.alt->block.hasBranch;
-        } else {
-            assert(false && "Alt field of ifstmt should either be a block or another if statement");
+        if (ifstmt->ifstmt.then->block.hasBranch) {
+            if (ifstmt->ifstmt.alt->kind == NodeKind::kIf) {
+                if (analyze_if(cmp, ifstmt->ifstmt.alt)) return Result::kError;
+                ifstmt->ifstmt.isTerminal = ifstmt->ifstmt.alt->ifstmt.isTerminal;
+            } else if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
+                scope_enter(cmp->scopeStack, false);
+                if (analyze_block(cmp, ifstmt->ifstmt.alt)) return Result::kError;
+                scope_exit(cmp->scopeStack);
+                ifstmt->ifstmt.isTerminal = ifstmt->ifstmt.alt->block.hasBranch;
+            } else {
+                assert(false && "Alt field of ifstmt should either be a block or another if statement");
+            }
         }
     } else {
         ifstmt->ifstmt.isTerminal = false;
@@ -384,10 +380,9 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 if (analyze_decl(cmp, stmt)) return Result::kError;
                 break;
             case NodeKind::kBlock:
-                assert(cmp->currFile->scopeStack);
-                scope_enter(cmp->currFile->scopeStack, false);
+                scope_enter(cmp->scopeStack, false);
                 if (analyze_block(cmp, stmt)) return Result::kError;
-                scope_exit(cmp->currFile->scopeStack);
+                scope_exit(cmp->scopeStack);
                 break;
             case NodeKind::kIf:
                 if (analyze_if(cmp, stmt)) return Result::kError;
@@ -434,7 +429,9 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
 }
 
 Result analyze_function_bodies(CompilationContext *cmp) {
-    while (cmp->resolveFuncBodyStack.size) {
+    while (cmp->resolveFuncBodyStack.size && cmp->currNumPendingFunc) {
+        size_t saveNumPendingFunc = cmp->currNumPendingFunc;
+        cmp->currNumPendingFunc = 0;
         Node *saveFunction = cmp->currFunction;
         cmp->currFunction = cmp->resolveFuncBodyStack.get(cmp->resolveFuncBodyStack.size - 1).func;
         File *saveFile = cmp->currFile;
@@ -456,10 +453,11 @@ Result analyze_function_bodies(CompilationContext *cmp) {
                 return Result::kError;
             }
         }
-        scope_exit(cmp->currFile->scopeStack);
+        scope_exit(cmp->scopeStack);
 
         cmp->currFunction = saveFunction;
         cmp->currFile = saveFile;
+        cmp->currNumPendingFunc = saveNumPendingFunc - 1;
     }
     return Result::kAccept;
 }
@@ -481,7 +479,7 @@ Result analyze_decl(CompilationContext *cmp, Node *decl) {
                 dx_note(at_node(other->decl.file->finfo, other->decl.lval), "First declaration here\n");
                 return Result::kError;
             }
-            scope_bind(cmp->currFile->scopeStack, decl);
+            scope_bind(cmp->scopeStack, decl);
             decl->decl.isBound = true;
         }
     } else {

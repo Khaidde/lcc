@@ -190,7 +190,6 @@ CompilationContext resolve_packages(const char *mainFile) {
                 }
                 file->package = pkg;
                 file->imports.init();
-                file->scopeStack = nullptr;
                 pkg->files.add(file);
                 if (parse_file(file)) {
                     cmp.isPackageResolutionSuccesful = false;
@@ -258,8 +257,10 @@ ErrCode compile(const char *path) {
         return ErrCode::kFailure;
     }
 
-    // Prepare stack for analysis of entire program
+    // Prepare stacks for analysis of entire program
+    cmp.scopeStack = scope_init();
     cmp.resolveFuncBodyStack = {};
+    cmp.currNumPendingFunc = 0;
 
     LStringView root{".", 1};
     Package *pkg = *cmp.packageMap.get(root);
