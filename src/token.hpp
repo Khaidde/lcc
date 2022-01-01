@@ -35,6 +35,7 @@ enum class TokenType {
     kRetArrow,
     kIf,
     kElse,
+    kLabel,
     kWhile,
     kRet,
     kBreak,
@@ -71,6 +72,7 @@ constexpr const char *token_type_string(TokenType type) {
         case TokenType::kRetArrow: return "=>";
         case TokenType::kIf: return "if";
         case TokenType::kElse: return "else";
+        case TokenType::kLabel: return "::";
         case TokenType::kWhile: return "while";
         case TokenType::kRet: return "ret";
         case TokenType::kBreak: return "break";

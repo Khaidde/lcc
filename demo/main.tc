@@ -23,17 +23,19 @@ main := :() -> string {
 }
 val := 2
 
-block := :() {
-  while 1 {
+block := :() -> u16 {
+  ::outer while 1 {
     if 1 {
-    } else if 1 {
-      ret
+      while 2 {
+        break outer
+      }
+      // continue
     } else {
-      ret
-    }
-    test := 2
-    // {
+      test := 5
       // ret
-    // }
+      break
+    }
   }
+  // a := 2
+  // ret
 }

@@ -9,7 +9,10 @@ ScopeStack *scope_init() {
     return table;
 }
 
-size_t scope_depth(ScopeStack *stack) { return stack->size - 1; }
+size_t scope_depth(ScopeStack *stack) {
+    assert(stack->size > 0);
+    return stack->size - 1;
+}
 
 void scope_enter(ScopeStack *stack, Node *owner) {
     Scope *scope = mem::malloc<Scope>();

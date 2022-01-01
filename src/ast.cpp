@@ -172,7 +172,7 @@ void r_print_ast(Node *node, size_t depth) {
             break;
         case NodeKind::kBlock:
             if (node->block.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
-                printf(" %d", node->block.branchLevel);
+                printf(" <level:%d>", node->block.branchLevel);
             }
             printf("\n");
 
@@ -181,8 +181,8 @@ void r_print_ast(Node *node, size_t depth) {
             }
             break;
         case NodeKind::kIf:
-            if (node->block.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
-                printf(" %d", node->block.branchLevel);
+            if (node->ifstmt.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
+                printf(" <level:%d>", node->ifstmt.branchLevel);
             }
             printf("\n");
 
@@ -191,8 +191,11 @@ void r_print_ast(Node *node, size_t depth) {
             if (node->ifstmt.alt) r_print_ast(node->ifstmt.alt, depth + 1);
             break;
         case NodeKind::kWhile:
-            if (node->block.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
-                printf(" %d", node->block.branchLevel);
+            if (node->whilestmt.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
+                printf(" <level:%d>", node->whilestmt.branchLevel);
+            }
+            if (node->whilestmt.label.src) {
+                printf(" <%s>", lstr_raw_str(node->whilestmt.label));
             }
             printf("\n");
 
@@ -211,15 +214,15 @@ void r_print_ast(Node *node, size_t depth) {
                 r_print_ast(node->ret.value, depth + 1);
             }
             break;
-        case NodeKind::kBreak:
-            if (node->brk.label.src) {
+        case NodeKind::kLoopBr:
+            printf(" <%s>", node->loopbr.isBreak ? "break" : "continue");
+            if (node->loopbr.label.src) {
                 print_color(kAnsiColorYellow);
-                printf(" %s", lstr_raw_str(node->brk.label));
+                printf(" %s", lstr_raw_str(node->loopbr.label));
                 reset_print_color();
             }
             printf("\n");
             break;
-        case NodeKind::kCont: printf("\n"); break;
     }
 }
 
@@ -241,8 +244,7 @@ const char *node_kind_string(NodeKind kind) {
         case NodeKind::kIf: return "If";
         case NodeKind::kWhile: return "While";
         case NodeKind::kRet: return "Ret";
-        case NodeKind::kBreak: return "Break";
-        case NodeKind::kCont: return "Continue";
+        case NodeKind::kLoopBr: return "LoopBranch";
     }
 }
 

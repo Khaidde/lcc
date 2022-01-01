@@ -323,7 +323,14 @@ Token *lex_next(Lexer *l) {
             } else {
                 return create_token(l, TokenType::kAssign);
             }
-        case ':': l->curLen++; return create_token(l, TokenType::kColon);
+        case ':':
+            l->curLen++;
+            if (peek_char(l) == ':') {
+                l->curLen++;
+                return create_token(l, TokenType::kLabel);
+            } else {
+                return create_token(l, TokenType::kColon);
+            }
         case ',': l->curLen++; return create_token(l, TokenType::kComma);
         case 0: return create_eof_token(l);
         default:

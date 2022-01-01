@@ -461,22 +461,29 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                     if (i == 0) assert(false);
                 }
                 break;
-            case NodeKind::kBreak:
-                if (stmt->brk.label.src) {
-                    todo("Implement break with label...\n");
-                    return Result::kError;
-                }
-                [[fallthrough]];
-            case NodeKind::kCont:
+            case NodeKind::kLoopBr:
                 for (size_t i = scope_depth(cmp->scopeStack);; i--) {
                     Scope *scope = cmp->scopeStack->scopes.get(i);
                     if (scope->owner->kind == NodeKind::kWhile) {
-                        block->block.branchLevel = i;
-                        break;
+                        if (stmt->loopbr.label.src) {
+                            if (scope->owner->whilestmt.label.src &&
+                                lstr_equal(scope->owner->whilestmt.label, stmt->loopbr.label)) {
+                                block->block.branchLevel = i;
+                                break;
+                            }
+                        } else {
+                            block->block.branchLevel = i;
+                            break;
+                        }
                     }
                     if (scope->owner->kind == NodeKind::kFunc) {
-                        dx_err(at_node(cmp->currFile->finfo, stmt), "%s statement must be inside a loop\n",
-                               node_kind_string(stmt->kind));
+                        if (stmt->loopbr.label.src) {
+                            dx_err(at_node(cmp->currFile->finfo, stmt), "Could not find label '%s'\n",
+                                   lstr_raw_str(stmt->loopbr.label));
+                        } else {
+                            dx_err(at_node(cmp->currFile->finfo, stmt), "%s statement must be inside a loop\n",
+                                   node_kind_string(stmt->kind));
+                        }
                         return Result::kError;
                     }
                     if (i == 0) assert(false);
@@ -503,6 +510,13 @@ Result analyze_function_bodies(CompilationContext *cmp) {
         if (scope_enter_func_bind_params(cmp, cmp->currFunction)) return Result::kError;
         if (cmp->currFunction->func.body->kind == NodeKind::kBlock) {
             if (analyze_block(cmp, cmp->currFunction->func.body)) return Result::kError;
+            if (cmp->currFunction->func.retTy) {
+                if (cmp->currFunction->func.body->block.branchLevel > scope_depth(cmp->scopeStack)) {
+                    dx_err(at_node(cmp->currFile->finfo, cmp->currFunction->func.retTy),
+                           "Function does not return a value in all scenarios\n");
+                    return Result::kError;
+                }
+            }
         } else {
             Type *bodyType = resolve_type(cmp, cmp->currFunction->func.body);
             if (!bodyType) return Result::kError;

@@ -486,6 +486,7 @@ Node *parse_if(Lexer *l) {
 Node *parse_while(Lexer *l) {
     assert(check_peek(l, TokenType::kWhile));
     Node *whilestmt = create_node(l, NodeKind::kWhile);
+    whilestmt->whilestmt.label.src = nullptr;
     whilestmt->whilestmt.branchLevel = (size_t)-1;
     lex_next(l);  // next while
 
@@ -531,6 +532,22 @@ Node *parse_block(Lexer *l) {
                     return nullptr;
                 }
                 break;
+            case TokenType::kLabel: {
+                lex_next(l);  // next ::
+                Token label = *lex_peek(l);
+                if (!check_peek(l, TokenType::kIdent)) {
+                    dx_err(at_token(l->finfo, &label), "Expected label name\n");
+                    return nullptr;
+                }
+                lex_next(l);  // next 'ident'
+                if (Node *whilestmt = parse_while(l)) {
+                    whilestmt->whilestmt.label = label.ident;
+                    block->block.stmts.add(whilestmt);
+                } else {
+                    return nullptr;
+                }
+                break;
+            }
             case TokenType::kWhile:
                 if (Node *whilestmt = parse_while(l)) {
                     block->block.stmts.add(whilestmt);
@@ -540,36 +557,26 @@ Node *parse_block(Lexer *l) {
                 break;
             case TokenType::kRet: {
                 Node *ret = create_node(l, NodeKind::kRet);
+                ret->ret.value = nullptr;  // Return values are obtained in following statements
                 ret->ret.resolvedTy = nullptr;
                 lex_next(l);  // next ret
-                if (!check_peek(l, TokenType::kRCurl)) {
-                    ret->ret.value = parse_expr(l);
-                    if (!ret->ret.value) return nullptr;
-                } else {
-                    ret->ret.value = nullptr;
-                }
                 end_node(l, ret);
                 block->block.stmts.add(ret);
                 break;
             }
-            case TokenType::kBreak: {
-                Node *brk = create_node(l, NodeKind::kBreak);
-                lex_next(l);  // next break
+            case TokenType::kBreak:
+            case TokenType::kCont: {
+                Node *loopbr = create_node(l, NodeKind::kLoopBr);
+                loopbr->loopbr.isBreak = check_peek(l, TokenType::kBreak);
+                lex_next(l);  // next break or cont
                 if (check_peek(l, TokenType::kIdent)) {
-                    brk->brk.label = lex_peek(l)->ident;
+                    loopbr->loopbr.label = lex_peek(l)->ident;
                     lex_next(l);  // next 'ident'
                 } else {
-                    brk->brk.label.src = nullptr;
+                    loopbr->loopbr.label.src = nullptr;
                 }
-                end_node(l, brk);
-                block->block.stmts.add(brk);
-                break;
-            }
-            case TokenType::kCont: {
-                Node *cont = create_node(l, NodeKind::kCont);
-                lex_next(l);  // next continue
-                end_node(l, cont);
-                block->block.stmts.add(cont);
+                end_node(l, loopbr);
+                block->block.stmts.add(loopbr);
                 break;
             }
             case TokenType::kEof:
@@ -579,6 +586,17 @@ Node *parse_block(Lexer *l) {
             case TokenType::kErr: return nullptr;
             default:
                 if (Node *declOrExpr = parse_decl_or_expr(l)) {
+                    // Set return value here for better error ouput
+                    if (declOrExpr->kind != NodeKind::kDecl) {
+                        if (block->block.stmts.size) {
+                            Node *ret = block->block.stmts.last();
+                            if (ret->kind == NodeKind::kRet) {
+                                ret->ret.value = declOrExpr;
+                                end_node(l, ret);
+                                break;
+                            }
+                        }
+                    }
                     block->block.stmts.add(declOrExpr);
                 } else {
                     return nullptr;
