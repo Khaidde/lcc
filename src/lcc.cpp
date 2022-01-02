@@ -20,10 +20,8 @@ struct FlagParserInfo {
     int argc;
     int ndx{1};
 
-    const char *outputFile{"a.out"};
-    bool hasOutputFileChanged{false};
-
-    LList<char *> inputFiles{};
+    const char *outputFile{nullptr};
+    const char *inputFile{nullptr};
 };
 
 static constexpr size_t kFlagStrLen = 32;
@@ -37,11 +35,10 @@ ErrCode set_output_file(FlagParserInfo &finfo) {
         err("-o must be followed by an output file name\n");
         return ErrCode::kFailure;
     }
-    if (finfo.hasOutputFileChanged) {
+    if (finfo.outputFile) {
         err("Cannot have multiple output files: %s\n", finfo.argv[finfo.ndx]);
         return ErrCode::kFailure;
     }
-    finfo.hasOutputFileChanged = true;
     finfo.outputFile = finfo.argv[finfo.ndx];
     return ErrCode::kSuccess;
 }
@@ -124,15 +121,18 @@ ErrCode parse_args(FlagParserInfo &finfo) {
                 err("Unknown flag: %s\n", finfo.argv[finfo.ndx]);
                 return ErrCode::kFailure;
             }
-        } else if (finfo.inputFiles.size) {
-            todo("Handle multiple input files\n");
+        } else if (finfo.inputFile) {
+            err("Multiple input files not supported\n");
             return ErrCode::kFailure;
         } else {
-            finfo.inputFiles.add(finfo.argv[finfo.ndx]);
+            finfo.inputFile = finfo.argv[finfo.ndx];
         }
         finfo.ndx++;
     }
-    if (finfo.inputFiles.size == 0) {
+    if (!finfo.outputFile) {
+        finfo.outputFile = "a.out";
+    }
+    if (!finfo.inputFile) {
         err("No input files\n");
         return ErrCode::kFailure;
     }
@@ -151,9 +151,10 @@ CompilationContext resolve_packages(const char *mainFile) {
     };
     LList<ImportContext> importStack{};
 
-    LString rootDir = file::split_dir(mainFile);
+    LStringView rootDir = file::split_dir(mainFile);
     importStack.add({nullptr, {".", 1}});
 
+    LString pkgDir = lstr_create(rootDir);
     LList<LString> filenames{};
     while (importStack.size) {
         // Get next import to resolve
@@ -162,10 +163,12 @@ CompilationContext resolve_packages(const char *mainFile) {
 
         if (!cmp.packageMap.get(importCtx.importName)) {
             // Find all files in the package if package directory exists
-            LString pkgDir = lstr_create(rootDir.data);
+            pkgDir.size = rootDir.len + 1;
             if (importCtx.importName.len != 1 || importCtx.importName.src[0] != '.') {
                 lstr_cat(pkgDir, "/");
                 lstr_cat(pkgDir, importCtx.importName);
+            } else {
+                pkgDir.data[pkgDir.size - 1] = '\0';
             }
             if (file::file_in_dir(filenames, pkgDir) == file::FileErrCode::kNotFound) {
                 err("Could not find package '%s' imported by '%s'\n", lstr_raw_str(importCtx.importName),
@@ -237,7 +240,7 @@ ErrCode command_line(int argc, char **argv) {
         return ErrCode::kFailure;
     }
 
-    if (compile(finfo.inputFiles.get(0)) != ErrCode::kSuccess) {
+    if (compile(finfo.inputFile) != ErrCode::kSuccess) {
         return ErrCode::kFailure;
     }
 

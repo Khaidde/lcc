@@ -25,9 +25,11 @@ size_t scope_depth(ScopeStack *stack);
 
 void scope_enter(ScopeStack *stack, Node *owner);
 
-void scope_exit(ScopeStack *stack);
-
 Node *scope_bind(ScopeStack *stack, Node *decl);
+
+Scope *scope_get(ScopeStack *stack);
+
+void scope_exit(ScopeStack *stack);
 
 }  // namespace lcc
 

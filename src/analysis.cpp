@@ -17,11 +17,11 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
         if (Node *other = scope_bind(cmp->scopeStack, param)) {
             dx_err(at_node(cmp->currFile->finfo, param->decl.lval), "Duplicate parameter name\n");
             dx_note(at_node(other->decl.file->finfo, other->decl.lval), "Previous parameter here\n");
-            return Result::kError;
+            return kError;
         }
         param->decl.isBound = true;
     }
-    return Result::kAccept;
+    return kAccept;
 }
 
 Result analyze_function_bodies(CompilationContext *cmp);
@@ -42,6 +42,21 @@ Node *decl_lookup(CompilationContext *cmp, LStringView &symbol) {
         return *import;
     }
     return nullptr;
+}
+
+Result scope_exit_check_unused(CompilationContext *cmp) {
+    Scope *scope = scope_get(cmp->scopeStack);
+    for (size_t i = 0; i < scope->decls.capacity; i++) {
+        if (scope->decls.table[i].psl) {
+            Node *decl = scope->decls.table[i].val;
+            if (!decl->decl.isUsed) {
+                dx_err(at_node(cmp->currFile->finfo, decl->decl.lval), "Unused variable\n");
+                return kError;
+            }
+        }
+    }
+    scope_exit(cmp->scopeStack);
+    return kAccept;
 }
 
 Type *create_type(TypeKind kind) {
@@ -81,7 +96,12 @@ bool is_numeric_type(Type *type) {
 
 Node *expand_name(CompilationContext *cmp, Node *nameRef) {
     assert(nameRef->kind == NodeKind::kName);
-    if (Node *declOrImport = decl_lookup(cmp, nameRef->name.ident)) return declOrImport;
+    if (Node *declOrImport = decl_lookup(cmp, nameRef->name.ident)) {
+        if (declOrImport->kind == NodeKind::kDecl) {
+            declOrImport->decl.isUsed = true;
+        }
+        return declOrImport;
+    }
     dx_err(at_node(cmp->currFile->finfo, nameRef), "No definition found for '%s'\n", lstr_raw_str(nameRef->name.ident));
     return nullptr;
 }
@@ -290,7 +310,7 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
                 if (scope_enter_func_bind_params(cmp, expr)) return nullptr;
                 funcTy->func.retTy = resolve_type(cmp, expr->func.body);
                 if (!funcTy->func.retTy) return nullptr;
-                scope_exit(cmp->scopeStack);
+                if (scope_exit_check_unused(cmp)) return nullptr;
             }
             return funcTy;
         }
@@ -301,22 +321,22 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
 
 Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
     assert(decl->kind == NodeKind::kDecl);
-    if (decl->decl.resolvedTy) return Result::kAccept;
+    if (decl->decl.resolvedTy) return kAccept;
 
-    if (decl->decl.isVisited) {
+    if (decl->decl.isResolving) {
         dx_err(at_node(cmp->currFile->finfo, decl), "Detected circular type dependency\n");
-        return Result::kError;
+        return kError;
     }
-    decl->decl.isVisited = true;
+    decl->decl.isResolving = true;
 
     bool hasTy = decl->decl.staticTy;
     bool hasRval = decl->decl.rval;
     if (hasRval) {
         decl->decl.resolvedTy = resolve_type(cmp, decl->decl.rval);
-        if (!decl->decl.resolvedTy) return Result::kError;
+        if (!decl->decl.resolvedTy) return kError;
         if (decl->decl.resolvedTy->kind == TypeKind::kNone) {
             dx_err(at_node(cmp->currFile->finfo, decl->decl.rval), "Cannot assign value of type 'none' to variable\n");
-            return Result::kError;
+            return kError;
         }
     }
     if (hasRval && hasTy) {
@@ -325,40 +345,40 @@ Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
             dx_err(at_node(cmp->currFile->finfo, decl),
                    "Mismatched declaration types: declared type is '%s', value type is '%s'\n", type_string(staticTy),
                    type_string(decl->decl.resolvedTy));
-            return Result::kError;
+            return kError;
         }
     } else if (hasTy) {
         decl->decl.resolvedTy = &decl->decl.staticTy->type;
     }
-    return Result::kAccept;
+    return kAccept;
 }
 
 Result analyze_block(CompilationContext *cmp, Node *block);
 
 Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
     Type *condType = resolve_type(cmp, ifstmt->ifstmt.cond);
-    if (!condType) return Result::kError;
+    if (!condType) return kError;
     if (!is_numeric_type(condType)) {
         dx_err(at_node(cmp->currFile->finfo, ifstmt->ifstmt.cond),
                "If statement condition expected to be a numeric type\n");
-        return Result::kError;
+        return kError;
     }
 
     scope_enter(cmp->scopeStack, ifstmt);
-    if (analyze_block(cmp, ifstmt->ifstmt.then)) return Result::kError;
+    if (analyze_block(cmp, ifstmt->ifstmt.then)) return kError;
     if (ifstmt->ifstmt.alt) {
-        scope_exit(cmp->scopeStack);
+        if (scope_exit_check_unused(cmp)) return kError;
 
         ifstmt->ifstmt.branchLevel = ifstmt->ifstmt.then->block.branchLevel;
         if (ifstmt->ifstmt.alt->kind == NodeKind::kIf) {
-            if (analyze_if(cmp, ifstmt->ifstmt.alt)) return Result::kError;
+            if (analyze_if(cmp, ifstmt->ifstmt.alt)) return kError;
             if (ifstmt->ifstmt.alt->ifstmt.branchLevel > ifstmt->ifstmt.branchLevel) {
                 ifstmt->ifstmt.branchLevel = ifstmt->ifstmt.alt->ifstmt.branchLevel;
             }
         } else if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
             scope_enter(cmp->scopeStack, ifstmt);
-            if (analyze_block(cmp, ifstmt->ifstmt.alt)) return Result::kError;
-            scope_exit(cmp->scopeStack);
+            if (analyze_block(cmp, ifstmt->ifstmt.alt)) return kError;
+            if (scope_exit_check_unused(cmp)) return kError;
             if (ifstmt->ifstmt.alt->block.branchLevel > ifstmt->ifstmt.branchLevel) {
                 ifstmt->ifstmt.branchLevel = ifstmt->ifstmt.alt->block.branchLevel;
             }
@@ -367,25 +387,25 @@ Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
         }
     } else {
         ifstmt->ifstmt.branchLevel = scope_depth(cmp->scopeStack);
-        scope_exit(cmp->scopeStack);
+        if (scope_exit_check_unused(cmp)) return kError;
     }
-    return Result::kAccept;
+    return kAccept;
 }
 
 Result analyze_while(CompilationContext *cmp, Node *whilestmt) {
     Type *condType = resolve_type(cmp, whilestmt->whilestmt.cond);
-    if (!condType) return Result::kError;
+    if (!condType) return kError;
     if (!is_numeric_type(condType)) {
         dx_err(at_node(cmp->currFile->finfo, whilestmt->whilestmt.cond),
                "While statement condition expected to be a numeric type\n");
-        return Result::kError;
+        return kError;
     }
 
     scope_enter(cmp->scopeStack, whilestmt);
-    if (analyze_block(cmp, whilestmt->whilestmt.loop)) return Result::kError;
+    if (analyze_block(cmp, whilestmt->whilestmt.loop)) return kError;
     whilestmt->whilestmt.branchLevel = whilestmt->whilestmt.loop->block.branchLevel;
-    scope_exit(cmp->scopeStack);
-    return Result::kAccept;
+    if (scope_exit_check_unused(cmp)) return kError;
+    return kAccept;
 }
 
 Result analyze_block(CompilationContext *cmp, Node *block) {
@@ -398,28 +418,32 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
         Node *stmt = block->block.stmts.get(i);
         if (block->block.branchLevel <= scope_depth(cmp->scopeStack)) {
             dx_err(at_node(cmp->currFile->finfo, stmt), "Unreachable code\n");
-            return Result::kError;
+            return kError;
         }
         switch (stmt->kind) {
             case NodeKind::kDecl:
-                if (analyze_decl(cmp, stmt)) return Result::kError;
+                if (stmt->decl.isExtern) {
+                    dx_err(at_node(cmp->currFile->finfo, stmt), "Local declaration cannot be marked as #extern\n");
+                    return kError;
+                }
+                if (analyze_decl(cmp, stmt)) return kError;
                 break;
             case NodeKind::kBlock:
                 scope_enter(cmp->scopeStack, stmt);
-                if (analyze_block(cmp, stmt)) return Result::kError;
-                scope_exit(cmp->scopeStack);
+                if (analyze_block(cmp, stmt)) return kError;
+                if (scope_exit_check_unused(cmp)) return kError;
                 if (stmt->block.branchLevel < block->block.branchLevel) {
                     block->block.branchLevel = stmt->block.branchLevel;
                 }
                 break;
             case NodeKind::kIf:
-                if (analyze_if(cmp, stmt)) return Result::kError;
+                if (analyze_if(cmp, stmt)) return kError;
                 if (stmt->ifstmt.branchLevel < block->block.branchLevel) {
                     block->block.branchLevel = stmt->ifstmt.branchLevel;
                 }
                 break;
             case NodeKind::kWhile:
-                if (analyze_while(cmp, stmt)) return Result::kError;
+                if (analyze_while(cmp, stmt)) return kError;
                 if (stmt->whilestmt.branchLevel < block->block.branchLevel) {
                     block->block.branchLevel = stmt->whilestmt.branchLevel;
                 }
@@ -427,12 +451,12 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
             case NodeKind::kRet:
                 if (stmt->ret.value) {
                     stmt->ret.resolvedTy = resolve_type(cmp, stmt->ret.value);
-                    if (!stmt->ret.resolvedTy) return Result::kError;
+                    if (!stmt->ret.resolvedTy) return kError;
                     if (!cmp->currFunction->func.retTy) {
                         dx_err(at_node(cmp->currFile->finfo, stmt),
                                "Returns value of type '%s' but function has no return type\n",
                                type_string(stmt->ret.resolvedTy));
-                        return Result::kError;
+                        return kError;
                     }
                     if (!is_type_equal(&cmp->currFunction->func.retTy->type, stmt->ret.resolvedTy)) {
                         dx_err(at_node(cmp->currFile->finfo, stmt),
@@ -440,7 +464,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                                type_string(&cmp->currFunction->func.retTy->type), type_string(stmt->ret.resolvedTy));
                         dx_note(at_node(cmp->currFile->finfo, cmp->currFunction->func.retTy),
                                 "Return type specified here\n");
-                        return Result::kError;
+                        return kError;
                     }
                 } else {
                     stmt->ret.resolvedTy = &builtin_type::none;
@@ -449,7 +473,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                                type_string(&cmp->currFunction->func.retTy->type));
                         dx_note(at_node(cmp->currFile->finfo, cmp->currFunction->func.retTy),
                                 "Return type specified here\n");
-                        return Result::kError;
+                        return kError;
                     }
                 }
                 for (size_t i = scope_depth(cmp->scopeStack);; i--) {
@@ -484,17 +508,24 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                             dx_err(at_node(cmp->currFile->finfo, stmt), "%s statement must be inside a loop\n",
                                    node_kind_string(stmt->kind));
                         }
-                        return Result::kError;
+                        return kError;
                     }
                     if (i == 0) assert(false);
                 }
                 break;
             default:
-                if (!resolve_type(cmp, stmt)) return Result::kError;
-                if (analyze_function_bodies(cmp)) return Result::kError;
+                if (Type *exprType = resolve_type(cmp, stmt)) {
+                    if (exprType->kind != TypeKind::kNone) {
+                        dx_err(at_node(cmp->currFile->finfo, stmt), "Unused expression result\n");
+                        return kError;
+                    }
+                } else {
+                    return kError;
+                }
+                if (analyze_function_bodies(cmp)) return kError;
         }
     }
-    return Result::kAccept;
+    return kAccept;
 }
 
 Result analyze_function_bodies(CompilationContext *cmp) {
@@ -507,53 +538,53 @@ Result analyze_function_bodies(CompilationContext *cmp) {
         cmp->currFile = cmp->resolveFuncBodyStack.get(cmp->resolveFuncBodyStack.size - 1).file;
         cmp->resolveFuncBodyStack.size--;
 
-        if (scope_enter_func_bind_params(cmp, cmp->currFunction)) return Result::kError;
+        if (scope_enter_func_bind_params(cmp, cmp->currFunction)) return kError;
         if (cmp->currFunction->func.body->kind == NodeKind::kBlock) {
-            if (analyze_block(cmp, cmp->currFunction->func.body)) return Result::kError;
+            if (analyze_block(cmp, cmp->currFunction->func.body)) return kError;
             if (cmp->currFunction->func.retTy) {
                 if (cmp->currFunction->func.body->block.branchLevel > scope_depth(cmp->scopeStack)) {
                     dx_err(at_node(cmp->currFile->finfo, cmp->currFunction->func.retTy),
                            "Function does not return a value in all scenarios\n");
-                    return Result::kError;
+                    return kError;
                 }
             }
         } else {
             Type *bodyType = resolve_type(cmp, cmp->currFunction->func.body);
-            if (!bodyType) return Result::kError;
+            if (!bodyType) return kError;
 
             assert(cmp->currFunction->func.retTy);
             if (!is_type_equal(bodyType, &cmp->currFunction->func.retTy->type)) {
                 dx_err(at_node(cmp->currFile->finfo, cmp->currFunction),
                        "Mismatched types: declared return type is '%s', return value type is '%s'\n",
                        type_string(&cmp->currFunction->func.retTy->type), type_string(bodyType));
-                return Result::kError;
+                return kError;
             }
         }
-        scope_exit(cmp->scopeStack);
+        if (scope_exit_check_unused(cmp)) return kError;
 
         cmp->currFunction = saveFunction;
         cmp->currFile = saveFile;
         cmp->currNumPendingFunc = saveNumPendingFunc - 1;
     }
-    return Result::kAccept;
+    return kAccept;
 }
 
 Result analyze_decl(CompilationContext *cmp, Node *decl) {
     assert(decl->kind == NodeKind::kDecl);
     decl->decl.file = cmp->currFile;
-    if (resolve_decl_type(cmp, decl)) return Result::kError;
+    if (resolve_decl_type(cmp, decl)) return kError;
 
     if (decl->decl.isDecl) {
         if (decl->decl.lval->kind != NodeKind::kName) {
             dx_err(at_node(cmp->currFile->finfo, decl->decl.lval),
                    "Left side of declaration must be a variable name\n");
-            return Result::kError;
+            return kError;
         }
         if (!decl->decl.isBound) {
             if (Node *other = decl_lookup(cmp, decl->decl.lval->name.ident)) {
                 dx_err(at_node(cmp->currFile->finfo, decl->decl.lval), "Redeclaration\n");
                 dx_note(at_node(other->decl.file->finfo, other->decl.lval), "First declaration here\n");
-                return Result::kError;
+                return kError;
             }
             scope_bind(cmp->scopeStack, decl);
             decl->decl.isBound = true;
@@ -561,11 +592,11 @@ Result analyze_decl(CompilationContext *cmp, Node *decl) {
     } else {
         assert(!decl->decl.staticTy);
         Type *lType = resolve_type(cmp, decl->decl.lval);
-        if (!lType) return Result::kError;
+        if (!lType) return kError;
         if (!is_type_equal(lType, decl->decl.resolvedTy)) {
             dx_err(at_node(cmp->currFile->finfo, decl), "Mismatched assignment types: left is '%s', right is '%s'\n",
                    type_string(lType), type_string(decl->decl.resolvedTy));
-            return Result::kError;
+            return kError;
         }
     }
 
@@ -579,9 +610,10 @@ Result analyze_file(CompilationContext *cmp) {
         auto &entry = cmp->currFile->package->globalDecls.table[i];
         if (entry.psl) {
             cmp->currFile = entry.val->decl.file;
-            if (analyze_decl(cmp, entry.val)) return Result::kError;
+            if (analyze_decl(cmp, entry.val)) return kError;
         }
     }
-    return Result::kAccept;
+    return kAccept;
 }
+
 };  // namespace lcc

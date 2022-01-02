@@ -9,7 +9,7 @@
 namespace lcc {
 
 enum class TokenType {
-    kImport,
+    kDirective,
     kAdd,
     kAddAdd,
     kAddEq,
@@ -46,7 +46,7 @@ enum class TokenType {
 
 constexpr const char *token_type_string(TokenType type) {
     switch (type) {
-        case TokenType::kImport: return "import";
+        case TokenType::kDirective: return "#";
         case TokenType::kAdd: return "+";
         case TokenType::kAddAdd: return "++";
         case TokenType::kAddEq: return "+=";

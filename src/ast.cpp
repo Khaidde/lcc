@@ -100,6 +100,10 @@ void r_print_ast(Node *node, size_t depth) {
             } else if (node->decl.isDecl) {
                 printf(" unknown");
             }
+            if (node->decl.isExtern) {
+                reset_print_color();
+                printf(" #extern");
+            }
             printf("\n");
             reset_print_color();
 

@@ -32,9 +32,26 @@ Node *parse_expr(Lexer *l);
 
 Node *parse_block(Lexer *l);
 
+Result parse_directive(Lexer *l, LStringView &directive) {
+    assert(lex_peek(l)->type == TokenType::kDirective);
+    lex_next(l);  // next #
+    if (check_peek(l, TokenType::kErr)) return kError;
+    if (!check_peek(l, TokenType::kIdent)) {
+        dx_err(at_token(l->finfo, lex_peek(l)), "Compiler directive must have a name\n");
+        return kError;
+    }
+    if (!lstr_equal(lex_peek(l)->ident, directive)) {
+        dx_err(at_token(l->finfo, lex_peek(l)), "Unknown compiler directive. Did you mean '%s'?\n",
+               lstr_raw_str(directive));
+        return kError;
+    }
+    lex_next(l);  // next directive
+    if (check_peek(l, TokenType::kErr)) return kError;
+    return kAccept;
+}
+
 Node *parse_import(Lexer *l) {
     Node *import = create_node(l, NodeKind::kImport);
-    lex_next(l);  // next import
 
     bool hasAlias = true;
 
@@ -103,8 +120,10 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     decl->decl.lval = lval;
     decl->decl.file = nullptr;
     decl->decl.resolvedTy = nullptr;
-    decl->decl.isVisited = false;
+    decl->decl.isExtern = false;
+    decl->decl.isResolving = false;
     decl->decl.isBound = false;
+    decl->decl.isUsed = false;
 
     if (check_peek(l, TokenType::kErr)) return nullptr;
     bool hasType = check_peek(l, TokenType::kColon);
@@ -131,6 +150,11 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
         if (!decl->decl.rval) return nullptr;
     } else {
         decl->decl.rval = nullptr;
+        if (check_peek(l, TokenType::kDirective)) {
+            LStringView externDirective{"extern", 6};
+            if (parse_directive(l, externDirective)) return nullptr;
+            decl->decl.isExtern = true;
+        }
     }
     if (!hasType && !hasAssignment) {
         dx_err(at_node(l->finfo, decl->decl.lval), "Declaration must have either a type or value\n");
@@ -569,6 +593,7 @@ Node *parse_block(Lexer *l) {
                 Node *loopbr = create_node(l, NodeKind::kLoopBr);
                 loopbr->loopbr.isBreak = check_peek(l, TokenType::kBreak);
                 lex_next(l);  // next break or cont
+                if (check_peek(l, TokenType::kErr)) return nullptr;
                 if (check_peek(l, TokenType::kIdent)) {
                     loopbr->loopbr.label = lex_peek(l)->ident;
                     lex_next(l);  // next 'ident'
@@ -614,29 +639,32 @@ Result parse_file(File *file) {
     l.finfo = file->finfo;
     lex_next(&l);  // Grab first lexer token
     for (;;) {
-        if (lex_peek(&l)->type == TokenType::kEof) return Result::kAccept;
-        if (lex_peek(&l)->type == TokenType::kErr) return Result::kError;
-        if (lex_peek(&l)->type == TokenType::kImport) {
+        if (check_peek(&l, TokenType::kEof)) return kAccept;
+        if (check_peek(&l, TokenType::kErr)) return kError;
+        if (check_peek(&l, TokenType::kDirective)) {
+            LStringView importDirective{"import", 6};
+            if (parse_directive(&l, importDirective)) return kError;
+
             Node *import = parse_import(&l);
-            if (!import) return Result::kError;
+            if (!import) return kError;
             if (Node **otherImport = file->imports.try_put(import->import.alias, import)) {
                 dx_err(at_node(l.finfo, import), "Duplicate import alias: %s\n", lstr_raw_str(import->import.alias));
                 dx_err(at_node(l.finfo, *otherImport), "Previous import here\n");
-                return Result::kError;
+                return kError;
             }
         } else if (Node *declOrExpr = parse_decl_or_expr(&l)) {
             if (declOrExpr->kind == NodeKind::kDecl) {
                 if (!declOrExpr->decl.isDecl) {
                     dx_err(at_node(l.finfo, declOrExpr), "Assignment cannot be in global scope\n",
                            node_kind_string(declOrExpr->kind));
-                    return Result::kError;
+                    return kError;
                 }
                 declOrExpr->decl.file = file;
 
                 if (declOrExpr->decl.lval->kind != NodeKind::kName) {
                     dx_err(at_node(file->finfo, declOrExpr->decl.lval),
                            "Must only declare variable names in global scope\n");
-                    return Result::kError;
+                    return kError;
                 }
 
                 LStringView &declName = declOrExpr->decl.lval->name.ident;
@@ -644,26 +672,32 @@ Result parse_file(File *file) {
                     Node *otherDecl = *other;
                     dx_err(at_node(file->finfo, declOrExpr->decl.lval), "Duplicate declaration\n");
                     dx_note(at_node(otherDecl->decl.file->finfo, otherDecl->decl.lval), "Previous declaration here\n");
-                    return Result::kError;
+                    return kError;
                 }
                 if (Node **other = file->imports.get(declName)) {
                     Node *otherImport = *other;
                     dx_err(at_node(file->finfo, otherImport),
                            "Import alias cannot have the same name as a declaration\n");
                     dx_note(at_node(declOrExpr->decl.file->finfo, declOrExpr), "Declaration found here\n");
-                    return Result::kError;
+                    return kError;
                 }
                 declOrExpr->decl.isBound = true;
+
+                if (!declOrExpr->decl.rval && !declOrExpr->decl.isExtern) {
+                    dx_err(at_node(file->finfo, declOrExpr),
+                           "Global declaration must be defined with a value or marked as #extern\n");
+                    return kError;
+                }
             } else {
                 dx_err(at_node(l.finfo, declOrExpr), "%s expression cannot be in global scope\n",
                        node_kind_string(declOrExpr->kind));
-                return Result::kError;
+                return kError;
             }
         } else {
-            return Result::kError;
+            return kError;
         }
     }
-    return Result::kAccept;
+    return kAccept;
 }
 
 }  // namespace lcc

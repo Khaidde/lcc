@@ -1,4 +1,4 @@
-import "io"
+#import "io"
 
 add := :(a: u16, b: u16) => a + b
 

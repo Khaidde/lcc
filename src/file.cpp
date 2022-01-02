@@ -45,45 +45,57 @@ bool is_regular_file(const char *path) {
     return S_ISREG(pathStat.st_mode);
 }
 
-LString split_dir(const char *path) {
-    LString out;
-    size_t sep = 0;
-    size_t i = 0;
-    while (*path) {
-        if (*path == '/' || *path == '\\') sep = i;
-        out.add((char)*(path++));
-        i++;
+LStringView split_dir(const char *path) {
+    const char *ptr = path;
+    const char *sep = path;
+    while (*ptr) {
+        if (*ptr == '/' || *ptr == '\\') sep = ptr;
+        ptr++;
     }
-    if (sep) {
-        out.data[sep] = '\0';
+    if (sep == path) {
+        return {".", 1};
     } else {
-        out.init(2);
-        out.data[0] = '.';
-        out.data[1] = '\0';
+        return {path, (size_t)(sep - path)};
     }
-    return out;
 }
+
+namespace {
+
+void strcpy_remove_backslash(char *dest, char *src) {
+    while (*src) {
+        if (*src == '\\') {
+            *dest = '/';
+        } else {
+            *dest = *src;
+        }
+        dest++;
+        src++;
+    }
+    *dest = '\0';
+}
+
+bool has_extension(const char *path, const char *extension) {
+    size_t pathlen = strlen(path);
+    size_t extlen = strlen(extension);
+    for (size_t i = 0; i < extlen; i++) {
+        if (path[pathlen - i - 1] != extension[extlen - i - 1]) return false;
+        if (i == 0) break;
+    }
+    return true;
+}
+
+}  // namespace
 
 FileErrCode file_in_dir(LList<LString> &outfiles, LString &dirname) {
     assert(dirname.size < MAX_PATH && "Directory path is too long");
     char buf[MAX_PATH];
-    memcpy(buf, dirname.data, dirname.size - 1);
-    size_t dirlen = dirname.size - 1;
-    buf[dirlen] = '\0';
-
+    strcpy_remove_backslash(buf, dirname.data);
     if (DIR *dir = opendir(buf)) {
-        buf[dirlen] = '/';
+        buf[dirname.size - 1] = '/';
         dirent *ent;
         while ((ent = readdir(dir)) != nullptr) {
-            memcpy(&buf[dirlen + 1], ent->d_name, ent->d_namlen);
-            buf[dirlen + ent->d_namlen + 1] = '\0';
-            if (is_regular_file(buf)) {
-                // TODO: Optimize this to remove backslashes through manually mem copying
-                char *data = buf;
-                while (*data) {
-                    if (*data == '\\') *data = '/';
-                    data++;
-                }
+            strcpy_remove_backslash(&buf[dirname.size], ent->d_name);
+            if (is_regular_file(buf) && has_extension(buf, ".tc")) {
                 outfiles.add(lstr_create(buf));
             }
         }

@@ -116,7 +116,6 @@ constexpr TokenType kKeywords[]{
     TokenType::kCont,
     TokenType::kElse,
     TokenType::kIf,
-    TokenType::kImport,
     TokenType::kRet,
     TokenType::kWhile,
 };
@@ -274,6 +273,7 @@ Token *lex_next(Lexer *l) {
                     return lex_next(l);
                 default: dx_err(curr(l), "Division not yet supported\n"); return ret_err(l);
             }
+        case '#': l->curLen++; return create_token(l, TokenType::kDirective);
         case '+':
             if (is_number(peek_peek_char(l))) return lex_integer(l);
             l->curLen++;

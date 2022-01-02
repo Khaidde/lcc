@@ -92,8 +92,10 @@ struct DeclNode {
     Type *resolvedTy;
 
     bool isDecl : 1;
-    bool isVisited : 1;
+    bool isExtern : 1;
+    bool isResolving : 1;
     bool isBound : 1;
+    bool isUsed : 1;
 };
 
 struct IntLitNode {

@@ -1,6 +1,3 @@
+#import "."
 
-print := :(out: string) {
-  if 1 {
-  }
-  // TODO: print
-}
+print: (string) #extern

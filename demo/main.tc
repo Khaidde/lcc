@@ -1,6 +1,6 @@
-// import "math"
+#import "math"
 
-import "io"
+#import "io"
 
 main := :() -> string {
   io.print("rand")
@@ -24,6 +24,7 @@ main := :() -> string {
 val := 2
 
 block := :() -> u16 {
+/*
   ::outer while 1 {
     if 1 {
       while 2 {
@@ -31,11 +32,12 @@ block := :() -> u16 {
       }
       // continue
     } else {
-      test := 5
       // ret
       break
     }
   }
-  // a := 2
-  // ret
+  */
+
+  a := 2
+  ret a
 }
