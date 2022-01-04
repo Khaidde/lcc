@@ -33,20 +33,19 @@ struct Package {
     LList<File *> files;
 };
 
+struct Type;
+
 struct CompilationContext {
+    Package *preloadPkg;
+
     LMap<LStringView, Package *, lstr_hash, lstr_equal> packageMap;
-    bool isPackageResolutionSuccesful;
 
     struct ScopeStack *scopeStack;
 
-    struct FunctionCtx {
-        File *file;
-        Node *func;
-        bool isSeparator;
-    };
-    LList<FunctionCtx> resolveFuncBodyStack;
+    LList<Node *> resolveFuncBodyStack;
     size_t currNumPendingFunc;
-    Node *currFunction;
+    Node *currRetTy;
+    Node *currResolvingTypeAlias;
     File *currFile;
 };
 

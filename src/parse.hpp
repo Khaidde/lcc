@@ -1,11 +1,12 @@
 #ifndef LCC_PARSE_HPP
 #define LCC_PARSE_HPP
 
+#include "token.hpp"
 #include "types.hpp"
 
 namespace lcc {
 
-Result parse_file(File *file);
+Node *parse_global(Lexer *l);
 
 }  // namespace lcc
 

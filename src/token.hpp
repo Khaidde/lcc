@@ -28,8 +28,9 @@ enum class TokenType {
     kRParen,
     kLCurl,
     kRCurl,
-    kAssign,
     kColon,
+    kType,
+    kAssign,
     kComma,
     kArrow,
     kRetArrow,
@@ -65,8 +66,9 @@ constexpr const char *token_type_string(TokenType type) {
         case TokenType::kRParen: return ")";
         case TokenType::kLCurl: return "{";
         case TokenType::kRCurl: return "}";
-        case TokenType::kAssign: return "=";
         case TokenType::kColon: return ":";
+        case TokenType::kType: return "type";
+        case TokenType::kAssign: return "=";
         case TokenType::kComma: return ",";
         case TokenType::kArrow: return "->";
         case TokenType::kRetArrow: return "=>";

@@ -2,12 +2,35 @@
 
 #import "io"
 
-main := :() -> string {
+test2 := u16
+test := test2
+
+other : test = 2
+other2 : test = 5
+
+u162 := u16
+
+testFunc := :(a: test, b: u162) {
+  str := string
+  val : str = "test"
+  io.print(val)
+  testFunc(a + 1, b + 2)
+}
+
+otherFunc := :() {
+  val : u162
+  testFunc(val, 5)
+}
+
+/*
+main := :(argc: u16) -> string {
   io.print("rand")
-  i := 2
+  i := argc
+
+  // io := 2
 
   v := 2
-  if i  {
+  if :(i: u16) -> u16 { ret i }(i)  {
     v = 2
     ret "ASDF"
   } else {
@@ -19,9 +42,12 @@ main := :() -> string {
     }
     // ret "asdf"
   }
-  ret "asdf"
+  str := "test"
+  ptr := *str
+  ret @ptr
 }
 val := 2
+*/
 
 block := :() -> u16 {
 /*

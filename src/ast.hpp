@@ -11,22 +11,17 @@ namespace lcc {
 
 enum class TypeKind {
     kNone,
-    kBase,
+    kType,
+    kNamed,
     kPtr,
     kFuncTy,
 };
 
-enum class BaseTypeKind {
-    u16,
-    string,
-};
-
-const char *base_type_string(BaseTypeKind kind);
-
 struct Type;
 
-struct BaseType {
-    BaseTypeKind kind;
+struct NamedType {
+    LStringView ident;
+    Node *ref;
 };
 
 struct PtrType {
@@ -41,21 +36,21 @@ struct FuncType {
 struct Type {
     TypeKind kind;
     union {
-        BaseType base;
+        NamedType name;
         PtrType ptr;
-        FuncType func;
+        FuncType funcTy;
     };
 };
 
-const char *type_string(Type *type);
-
 namespace builtin_type {
 
-extern Type none;
-extern Type u16;
-extern Type string;
+extern Type *none;
+extern Type *u16;
+extern Type *string;
 
 }  // namespace builtin_type
+
+const char *type_string(Type *type);
 
 enum class NodeKind {
     kImport,
@@ -129,7 +124,7 @@ struct CallNode {
 
 struct FuncNode {
     LList<Node *> params;
-    Node *retTy;
+    Node *staticRetTy;
     Node *body;
 };
 

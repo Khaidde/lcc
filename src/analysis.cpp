@@ -26,20 +26,29 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
 
 Result analyze_function_bodies(CompilationContext *cmp);
 
+Node *import_lookup(CompilationContext *cmp, LStringView &symbol) {
+    if (Node **import = cmp->currFile->imports.get(symbol)) {
+        return *import;
+    }
+    return nullptr;
+}
+
 Node *decl_lookup(CompilationContext *cmp, LStringView &symbol) {
-    for (size_t i = scope_depth(cmp->scopeStack);; i--) {
-        Scope *scope = cmp->scopeStack->scopes.get(i);
-        if (Node **decl = scope->decls.get(symbol)) {
-            return *decl;
+    if (Node **preloadDecl = cmp->preloadPkg->globalDecls.get(symbol)) {
+        return *preloadDecl;
+    }
+    if (cmp->scopeStack->size > 0) {
+        for (size_t i = scope_depth(cmp->scopeStack);; i--) {
+            Scope *scope = cmp->scopeStack->scopes.get(i);
+            if (Node **decl = scope->decls.get(symbol)) {
+                return *decl;
+            }
+            if (scope->owner->kind == NodeKind::kFunc) break;
+            if (i == 0) break;
         }
-        if (scope->owner->kind == NodeKind::kFunc) break;
-        if (i == 0) break;
     }
     if (Node **globalDecl = cmp->currFile->package->globalDecls.get(symbol)) {
         return *globalDecl;
-    }
-    if (Node **import = cmp->currFile->imports.get(symbol)) {
-        return *import;
     }
     return nullptr;
 }
@@ -71,13 +80,14 @@ bool is_type_equal(Type *t1, Type *t2) {
 
     switch (t1->kind) {
         case TypeKind::kNone: return true;
-        case TypeKind::kBase: return t1->base.kind == t2->base.kind;
+        case TypeKind::kType: return true;
+        case TypeKind::kNamed: return t1->name.ref && t2->name.ref && t1->name.ref == t2->name.ref;
         case TypeKind::kPtr: return is_type_equal(t1->ptr.inner, t2->ptr.inner);
         case TypeKind::kFuncTy:
-            if (t1->func.paramTys.size != t2->func.paramTys.size) return false;
-            if (!is_type_equal(t1->func.retTy, t2->func.retTy)) return false;
-            for (size_t i = 0; i < t1->func.paramTys.size; i++) {
-                if (!is_type_equal(t1->func.paramTys.get(i), t2->func.paramTys.get(i))) {
+            if (t1->funcTy.paramTys.size != t2->funcTy.paramTys.size) return false;
+            if (!is_type_equal(t1->funcTy.retTy, t2->funcTy.retTy)) return false;
+            for (size_t i = 0; i < t1->funcTy.paramTys.size; i++) {
+                if (!is_type_equal(t1->funcTy.paramTys.get(i), t2->funcTy.paramTys.get(i))) {
                     return false;
                 }
             }
@@ -88,19 +98,87 @@ bool is_type_equal(Type *t1, Type *t2) {
 bool is_numeric_type(Type *type) {
     switch (type->kind) {
         case TypeKind::kNone: return false;
-        case TypeKind::kBase: return type->base.kind == BaseTypeKind::u16;
+        case TypeKind::kType: return false;
+        case TypeKind::kNamed: return type->name.ref && type->name.ref == builtin_type::u16->name.ref;
         case TypeKind::kPtr: return true;
         case TypeKind::kFuncTy: return false;
     }
 }
 
+Result analyze_decl(CompilationContext *cmp, Node *decl);
+
+Type *resolve_expanded_decl_type(CompilationContext *cmp, Node *expansion) {
+    assert(expansion->kind == NodeKind::kDecl);
+    File *save = cmp->currFile;
+    cmp->currFile = expansion->decl.file;
+    if (analyze_decl(cmp, expansion)) return nullptr;
+    cmp->currFile = save;
+    return expansion->decl.resolvedTy;
+}
+
+Node *resolve_type_alias(CompilationContext *cmp, Node *typeAlias) {
+    assert(typeAlias->kind == NodeKind::kDecl);
+    assert(typeAlias->decl.isDecl);
+    if (Type *resolvedType = resolve_expanded_decl_type(cmp, typeAlias)) {
+        if (resolvedType->kind != TypeKind::kType) {
+            dx_err(at_node(typeAlias->decl.file->finfo, typeAlias),
+                   "'%s' expected to be a type alias: Found static type of '%s'\n",
+                   lstr_raw_str(typeAlias->decl.lval->name.ident), type_string(resolvedType));
+            dx_note(at_node(cmp->currFile->finfo, cmp->currResolvingTypeAlias), "Type alias needed here\n");
+            return nullptr;
+        }
+
+        // TODO: Also return when encountering a struct rval
+        if (typeAlias->decl.isExtern) return typeAlias;
+        typeAlias->decl.isUsed = true;
+
+        assert(typeAlias->decl.rval);
+        assert(typeAlias->decl.rval->kind == NodeKind::kName);
+        typeAlias->decl.rval->name.ref = resolve_type_alias(cmp, typeAlias->decl.rval->name.ref);
+        return typeAlias->decl.rval->name.ref;
+    }
+    return nullptr;
+}
+
+Result r_simplify_type_alias(CompilationContext *cmp, Node *src, Type *type) {
+    switch (type->kind) {
+        case TypeKind::kNone:
+        case TypeKind::kType: break;
+        case TypeKind::kNamed:
+            if (Node *decl = decl_lookup(cmp, type->name.ident)) {
+                Node *saveTypeAlias = src;
+                cmp->currResolvingTypeAlias = src;
+                type->name.ref = resolve_type_alias(cmp, decl);
+                if (!type->name.ref) return kError;
+                cmp->currResolvingTypeAlias = saveTypeAlias;
+            } else {
+                dx_err(at_node(cmp->currFile->finfo, src), "No type alias found for '%s'\n",
+                       lstr_raw_str(type->name.ident));
+                return kError;
+            }
+            break;
+        case TypeKind::kPtr: r_simplify_type_alias(cmp, src, type->ptr.inner); break;
+        case TypeKind::kFuncTy:
+            for (size_t i = 0; i < type->funcTy.paramTys.size; i++) {
+                if (r_simplify_type_alias(cmp, src, type->funcTy.paramTys.get(i))) return kError;
+            }
+            return r_simplify_type_alias(cmp, src, type->funcTy.retTy);
+    }
+    return kAccept;
+}
+
+Result simplify_type_alias(CompilationContext *cmp, Node *type) {
+    assert(type->kind == NodeKind::kType);
+    return r_simplify_type_alias(cmp, type, &type->type);
+}
+
 Node *expand_name(CompilationContext *cmp, Node *nameRef) {
     assert(nameRef->kind == NodeKind::kName);
-    if (Node *declOrImport = decl_lookup(cmp, nameRef->name.ident)) {
-        if (declOrImport->kind == NodeKind::kDecl) {
-            declOrImport->decl.isUsed = true;
-        }
-        return declOrImport;
+    if (Node *decl = decl_lookup(cmp, nameRef->name.ident)) {
+        decl->decl.isUsed = true;
+        return decl;
+    } else if (Node *import = import_lookup(cmp, nameRef->name.ident)) {
+        return import;
     }
     dx_err(at_node(cmp->currFile->finfo, nameRef), "No definition found for '%s'\n", lstr_raw_str(nameRef->name.ident));
     return nullptr;
@@ -151,21 +229,6 @@ Node *expand_dot_access(CompilationContext *cmp, Node *dotAccessRef) {
     return nullptr;
 }
 
-Result analyze_decl(CompilationContext *cmp, Node *decl);
-
-Type *resolve_expansion(CompilationContext *cmp, Node *original, Node *expansion) {
-    if (expansion->kind == NodeKind::kImport) {
-        dx_err(at_node(cmp->currFile->finfo, original), "Package alias cannot be used as a variable\n");
-        return nullptr;
-    }
-    assert(expansion->kind == NodeKind::kDecl);
-    File *save = cmp->currFile;
-    cmp->currFile = expansion->decl.file;
-    if (analyze_decl(cmp, expansion)) return nullptr;
-    cmp->currFile = save;
-    return expansion->decl.resolvedTy;
-}
-
 Type *resolve_type(CompilationContext *cmp, Node *expr);
 
 Type *resolve_prefix(CompilationContext *cmp, Node *prefix) {
@@ -176,7 +239,7 @@ Type *resolve_prefix(CompilationContext *cmp, Node *prefix) {
 
     switch (prefix->prefix.op) {
         case TokenType::kSubNeg:
-            if (is_type_equal(inner, &builtin_type::u16)) {
+            if (is_type_equal(inner, builtin_type::u16)) {
                 return inner;
             }
             dx_err(at_node(cmp->currFile->finfo, prefix->prefix.inner),
@@ -190,6 +253,14 @@ Type *resolve_prefix(CompilationContext *cmp, Node *prefix) {
             return nullptr;
         case TokenType::kPtr: {
             Type *ptr = create_type(TypeKind::kPtr);
+            if (prefix->prefix.inner->kind != NodeKind::kName) {
+                if (prefix->prefix.inner->kind != NodeKind::kInfix ||
+                    prefix->prefix.inner->infix.op != TokenType::kDot) {
+                    dx_err(at_node(cmp->currFile->finfo, prefix),
+                           "Argument type of address '*' expected to be a variable\n");
+                    return nullptr;
+                }
+            }
             ptr->ptr.inner = inner;
             return ptr;
         }
@@ -207,10 +278,14 @@ Type *resolve_prefix(CompilationContext *cmp, Node *prefix) {
 
 Type *resolve_infix(CompilationContext *cmp, Node *infix) {
     if (infix->infix.op == TokenType::kDot) {
-        if (Node *decl = expand_dot_access(cmp, infix)) {
+        if (Node *declOrImport = expand_dot_access(cmp, infix)) {
             assert(infix->infix.right->kind == NodeKind::kName);
-            infix->infix.right->name.ref = decl;
-            return resolve_expansion(cmp, infix, decl);
+            infix->infix.right->name.ref = declOrImport;
+            if (declOrImport->kind == NodeKind::kImport) {
+                dx_err(at_node(cmp->currFile->finfo, infix->infix.right), "Package alias cannot be used as a value\n");
+                return nullptr;
+            }
+            return resolve_expanded_decl_type(cmp, declOrImport);
         }
         return nullptr;
     }
@@ -253,32 +328,36 @@ Type *resolve_call(CompilationContext *cmp, Node *call) {
                type_string(ctype));
         return nullptr;
     }
-    if (call->call.args.size != ctype->func.paramTys.size) {
-        dx_err(at_node(cmp->currFile->finfo, call), "Expected %d argument(s) but found %d\n", ctype->func.paramTys.size,
-               call->call.args.size);
+    if (call->call.args.size != ctype->funcTy.paramTys.size) {
+        dx_err(at_node(cmp->currFile->finfo, call), "Expected %d argument(s) but found %d\n",
+               ctype->funcTy.paramTys.size, call->call.args.size);
         return nullptr;
     }
-    for (size_t i = 0; i < ctype->func.paramTys.size; i++) {
+    for (size_t i = 0; i < ctype->funcTy.paramTys.size; i++) {
         Type *argTy = resolve_type(cmp, call->call.args.get(i));
         if (!argTy) return nullptr;
-        if (!is_type_equal(argTy, ctype->func.paramTys.get(i))) {
+        if (!is_type_equal(argTy, ctype->funcTy.paramTys.get(i))) {
             dx_err(at_node(cmp->currFile->finfo, call->call.args.get(i)),
-                   "Argument expected to have type '%s': Found '%s'\n", type_string(ctype->func.paramTys.get(i)),
+                   "Argument expected to have type '%s': Found '%s'\n", type_string(ctype->funcTy.paramTys.get(i)),
                    type_string(argTy));
             return nullptr;
         }
     }
-    return ctype->func.retTy;
+    return ctype->funcTy.retTy;
 }
 
 Type *resolve_type(CompilationContext *cmp, Node *expr) {
     switch (expr->kind) {
-        case NodeKind::kIntLit: return &builtin_type::u16;
-        case NodeKind::kStrLit: return &builtin_type::string;
+        case NodeKind::kIntLit: return builtin_type::u16;
+        case NodeKind::kStrLit: return builtin_type::string;
         case NodeKind::kName:
             if (Node *decl = expand_name(cmp, expr)) {
                 expr->name.ref = decl;
-                return resolve_expansion(cmp, expr, decl);
+                if (decl->kind == NodeKind::kImport) {
+                    dx_err(at_node(cmp->currFile->finfo, expr), "Package alias cannot be used as a value\n");
+                    return nullptr;
+                }
+                return resolve_expanded_decl_type(cmp, decl);
             }
             return nullptr;
         case NodeKind::kPrefix: return resolve_prefix(cmp, expr);
@@ -286,30 +365,32 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
         case NodeKind::kCall: return resolve_call(cmp, expr);
         case NodeKind::kFunc: {
             Type *funcTy = create_type(TypeKind::kFuncTy);
-            funcTy->func.paramTys = {};
-            if (expr->func.params.size) funcTy->func.paramTys.init(expr->func.params.size);
+            funcTy->funcTy.paramTys = {};
+            if (expr->func.params.size) funcTy->funcTy.paramTys.init(expr->func.params.size);
             for (size_t i = 0; i < expr->func.params.size; i++) {
-                Node *decl = expr->func.params.get(i);
-                decl->decl.file = cmp->currFile;
-                if (!decl->decl.staticTy) {
-                    dx_err(at_node(cmp->currFile->finfo, decl), "Function parameter must explicitly specify a type\n");
+                Node *param = expr->func.params.get(i);
+                param->decl.file = cmp->currFile;
+                if (!param->decl.staticTy) {
+                    dx_err(at_node(cmp->currFile->finfo, param), "Function parameter must explicitly specify a type\n");
                     return nullptr;
                 }
-                decl->decl.resolvedTy = &decl->decl.staticTy->type;
-                funcTy->func.paramTys.add(decl->decl.resolvedTy);
+                if (simplify_type_alias(cmp, param->decl.staticTy)) return nullptr;
+                param->decl.resolvedTy = &param->decl.staticTy->type;
+                funcTy->funcTy.paramTys.add(param->decl.resolvedTy);
             }
-            if (expr->func.retTy) {
-                funcTy->func.retTy = &expr->func.retTy->type;
-                cmp->resolveFuncBodyStack.add({cmp->currFile, expr, false});
+            if (expr->func.staticRetTy) {
+                if (simplify_type_alias(cmp, expr->func.staticRetTy)) return nullptr;
+                funcTy->funcTy.retTy = &expr->func.staticRetTy->type;
+                cmp->resolveFuncBodyStack.add(expr);
                 cmp->currNumPendingFunc++;
             } else if (expr->func.body->kind == NodeKind::kBlock) {
-                funcTy->func.retTy = &builtin_type::none;
-                cmp->resolveFuncBodyStack.add({cmp->currFile, expr, false});
+                funcTy->funcTy.retTy = builtin_type::none;
+                cmp->resolveFuncBodyStack.add(expr);
                 cmp->currNumPendingFunc++;
             } else {
                 if (scope_enter_func_bind_params(cmp, expr)) return nullptr;
-                funcTy->func.retTy = resolve_type(cmp, expr->func.body);
-                if (!funcTy->func.retTy) return nullptr;
+                funcTy->funcTy.retTy = resolve_type(cmp, expr->func.body);
+                if (!funcTy->funcTy.retTy) return nullptr;
                 if (scope_exit_check_unused(cmp)) return nullptr;
             }
             return funcTy;
@@ -339,16 +420,21 @@ Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
             return kError;
         }
     }
-    if (hasRval && hasTy) {
+    if (hasTy) {
+        if (simplify_type_alias(cmp, decl->decl.staticTy)) return kError;
         Type *staticTy = &decl->decl.staticTy->type;
-        if (!is_type_equal(staticTy, decl->decl.resolvedTy)) {
-            dx_err(at_node(cmp->currFile->finfo, decl),
-                   "Mismatched declaration types: declared type is '%s', value type is '%s'\n", type_string(staticTy),
-                   type_string(decl->decl.resolvedTy));
-            return kError;
+        if (hasRval) {
+            if (!is_type_equal(staticTy, decl->decl.resolvedTy)) {
+                dx_err(at_node(cmp->currFile->finfo, decl),
+                       "Mismatched declaration types: declared type is '%s', value type is '%s'\n",
+                       type_string(staticTy), type_string(decl->decl.resolvedTy));
+                return kError;
+            }
         }
-    } else if (hasTy) {
-        decl->decl.resolvedTy = &decl->decl.staticTy->type;
+        if (decl->decl.resolvedTy) {
+            // TODO: free the previous decl->decl.resolvedTy if it exists
+        }
+        decl->decl.resolvedTy = staticTy;
     }
     return kAccept;
 }
@@ -357,6 +443,7 @@ Result analyze_block(CompilationContext *cmp, Node *block);
 
 Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
     Type *condType = resolve_type(cmp, ifstmt->ifstmt.cond);
+    if (analyze_function_bodies(cmp)) return kError;
     if (!condType) return kError;
     if (!is_numeric_type(condType)) {
         dx_err(at_node(cmp->currFile->finfo, ifstmt->ifstmt.cond),
@@ -394,6 +481,7 @@ Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
 
 Result analyze_while(CompilationContext *cmp, Node *whilestmt) {
     Type *condType = resolve_type(cmp, whilestmt->whilestmt.cond);
+    if (analyze_function_bodies(cmp)) return kError;
     if (!condType) return kError;
     if (!is_numeric_type(condType)) {
         dx_err(at_node(cmp->currFile->finfo, whilestmt->whilestmt.cond),
@@ -452,27 +540,25 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 if (stmt->ret.value) {
                     stmt->ret.resolvedTy = resolve_type(cmp, stmt->ret.value);
                     if (!stmt->ret.resolvedTy) return kError;
-                    if (!cmp->currFunction->func.retTy) {
+                    if (!cmp->currRetTy) {
                         dx_err(at_node(cmp->currFile->finfo, stmt),
                                "Returns value of type '%s' but function has no return type\n",
                                type_string(stmt->ret.resolvedTy));
                         return kError;
                     }
-                    if (!is_type_equal(&cmp->currFunction->func.retTy->type, stmt->ret.resolvedTy)) {
+                    if (!is_type_equal(&cmp->currRetTy->type, stmt->ret.resolvedTy)) {
                         dx_err(at_node(cmp->currFile->finfo, stmt),
                                "Mismatched types: function return type is '%s', return statement type is '%s'\n",
-                               type_string(&cmp->currFunction->func.retTy->type), type_string(stmt->ret.resolvedTy));
-                        dx_note(at_node(cmp->currFile->finfo, cmp->currFunction->func.retTy),
-                                "Return type specified here\n");
+                               type_string(&cmp->currRetTy->type), type_string(stmt->ret.resolvedTy));
+                        dx_note(at_node(cmp->currFile->finfo, cmp->currRetTy), "Return type specified here\n");
                         return kError;
                     }
                 } else {
-                    stmt->ret.resolvedTy = &builtin_type::none;
-                    if (cmp->currFunction->func.retTy) {
+                    stmt->ret.resolvedTy = builtin_type::none;
+                    if (cmp->currRetTy) {
                         dx_err(at_node(cmp->currFile->finfo, stmt), "Must return value of type '%s'\n",
-                               type_string(&cmp->currFunction->func.retTy->type));
-                        dx_note(at_node(cmp->currFile->finfo, cmp->currFunction->func.retTy),
-                                "Return type specified here\n");
+                               type_string(&cmp->currRetTy->type));
+                        dx_note(at_node(cmp->currFile->finfo, cmp->currRetTy), "Return type specified here\n");
                         return kError;
                     }
                 }
@@ -532,38 +618,37 @@ Result analyze_function_bodies(CompilationContext *cmp) {
     while (cmp->resolveFuncBodyStack.size && cmp->currNumPendingFunc) {
         size_t saveNumPendingFunc = cmp->currNumPendingFunc;
         cmp->currNumPendingFunc = 0;
-        Node *saveFunction = cmp->currFunction;
-        cmp->currFunction = cmp->resolveFuncBodyStack.get(cmp->resolveFuncBodyStack.size - 1).func;
-        File *saveFile = cmp->currFile;
-        cmp->currFile = cmp->resolveFuncBodyStack.get(cmp->resolveFuncBodyStack.size - 1).file;
+
+        Node *saveRetTy = cmp->currRetTy;
+        Node *currFunction = cmp->resolveFuncBodyStack.get(cmp->resolveFuncBodyStack.size - 1);
+        cmp->currRetTy = currFunction->func.staticRetTy;
         cmp->resolveFuncBodyStack.size--;
 
-        if (scope_enter_func_bind_params(cmp, cmp->currFunction)) return kError;
-        if (cmp->currFunction->func.body->kind == NodeKind::kBlock) {
-            if (analyze_block(cmp, cmp->currFunction->func.body)) return kError;
-            if (cmp->currFunction->func.retTy) {
-                if (cmp->currFunction->func.body->block.branchLevel > scope_depth(cmp->scopeStack)) {
-                    dx_err(at_node(cmp->currFile->finfo, cmp->currFunction->func.retTy),
+        if (scope_enter_func_bind_params(cmp, currFunction)) return kError;
+        if (currFunction->func.body->kind == NodeKind::kBlock) {
+            if (analyze_block(cmp, currFunction->func.body)) return kError;
+            if (cmp->currRetTy) {
+                if (currFunction->func.body->block.branchLevel > scope_depth(cmp->scopeStack)) {
+                    dx_err(at_node(cmp->currFile->finfo, cmp->currRetTy),
                            "Function does not return a value in all scenarios\n");
                     return kError;
                 }
             }
         } else {
-            Type *bodyType = resolve_type(cmp, cmp->currFunction->func.body);
+            Type *bodyType = resolve_type(cmp, currFunction->func.body);
             if (!bodyType) return kError;
 
-            assert(cmp->currFunction->func.retTy);
-            if (!is_type_equal(bodyType, &cmp->currFunction->func.retTy->type)) {
-                dx_err(at_node(cmp->currFile->finfo, cmp->currFunction),
+            assert(cmp->currRetTy);
+            if (!is_type_equal(bodyType, &cmp->currRetTy->type)) {
+                dx_err(at_node(cmp->currFile->finfo, currFunction),
                        "Mismatched types: declared return type is '%s', return value type is '%s'\n",
-                       type_string(&cmp->currFunction->func.retTy->type), type_string(bodyType));
+                       type_string(&cmp->currRetTy->type), type_string(bodyType));
                 return kError;
             }
         }
         if (scope_exit_check_unused(cmp)) return kError;
 
-        cmp->currFunction = saveFunction;
-        cmp->currFile = saveFile;
+        cmp->currRetTy = saveRetTy;
         cmp->currNumPendingFunc = saveNumPendingFunc - 1;
     }
     return kAccept;
@@ -575,15 +660,16 @@ Result analyze_decl(CompilationContext *cmp, Node *decl) {
     if (resolve_decl_type(cmp, decl)) return kError;
 
     if (decl->decl.isDecl) {
-        if (decl->decl.lval->kind != NodeKind::kName) {
-            dx_err(at_node(cmp->currFile->finfo, decl->decl.lval),
-                   "Left side of declaration must be a variable name\n");
-            return kError;
-        }
         if (!decl->decl.isBound) {
-            if (Node *other = decl_lookup(cmp, decl->decl.lval->name.ident)) {
-                dx_err(at_node(cmp->currFile->finfo, decl->decl.lval), "Redeclaration\n");
-                dx_note(at_node(other->decl.file->finfo, other->decl.lval), "First declaration here\n");
+            if (Node *otherDecl = decl_lookup(cmp, decl->decl.lval->name.ident)) {
+                dx_err(at_node(decl->decl.file->finfo, decl->decl.lval), "Redeclaration\n");
+                dx_note(at_node(otherDecl->decl.file->finfo, otherDecl->decl.lval), "First declaration here\n");
+                return kError;
+            }
+            if (Node *import = import_lookup(cmp, decl->decl.lval->name.ident)) {
+                dx_err(at_node(decl->decl.file->finfo, decl->decl.lval),
+                       "Declaration cannot have the same name as a package alias\n");
+                dx_note(at_node(decl->decl.file->finfo, import), "Package alias found here\n");
                 return kError;
             }
             scope_bind(cmp->scopeStack, decl);
@@ -592,9 +678,13 @@ Result analyze_decl(CompilationContext *cmp, Node *decl) {
     } else {
         assert(!decl->decl.staticTy);
         Type *lType = resolve_type(cmp, decl->decl.lval);
+        if (lType->kind == TypeKind::kType) {
+            dx_err(at_node(decl->decl.file->finfo, decl->decl.lval), "Cannot reassign to a type alias\n");
+            return kError;
+        }
         if (!lType) return kError;
         if (!is_type_equal(lType, decl->decl.resolvedTy)) {
-            dx_err(at_node(cmp->currFile->finfo, decl), "Mismatched assignment types: left is '%s', right is '%s'\n",
+            dx_err(at_node(decl->decl.file->finfo, decl), "Mismatched assignment types: left is '%s', right is '%s'\n",
                    type_string(lType), type_string(decl->decl.resolvedTy));
             return kError;
         }
@@ -615,5 +705,4 @@ Result analyze_file(CompilationContext *cmp) {
     }
     return kAccept;
 }
-
 };  // namespace lcc

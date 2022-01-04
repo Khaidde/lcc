@@ -3,7 +3,6 @@
 #include "ast.hpp"
 #include "diagnostic.hpp"
 #include "print.hpp"
-#include "token.hpp"
 
 namespace lcc {
 
@@ -128,6 +127,11 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     if (check_peek(l, TokenType::kErr)) return nullptr;
     bool hasType = check_peek(l, TokenType::kColon);
     if (hasType) {
+        if (decl->decl.lval->kind != NodeKind::kName) {
+            dx_err(at_node(l->finfo, decl->decl.lval), "Left side of declaration must be a variable name\n");
+            return nullptr;
+        }
+
         decl->decl.isDecl = true;
         lex_next(l);  // next :
 
@@ -165,35 +169,15 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     return decl;
 }
 
-constexpr BaseTypeKind kBaseTypes[] = {BaseTypeKind::u16, BaseTypeKind::string};
-
-constexpr size_t kNumBaseTypes = sizeof(kBaseTypes) / sizeof(BaseTypeKind);
-
 bool r_parse_type(Lexer *l, Type *dest) {
     Token *tkn = lex_peek(l);
     switch (tkn->type) {
-        case TokenType::kIdent: {
-            dest->kind = TypeKind::kBase;
-            size_t i;
-            for (i = 0; i < kNumBaseTypes; i++) {
-                size_t k;
-                const char *baseType = base_type_string(kBaseTypes[i]);
-                for (k = 0; k < tkn->ident.len; k++) {
-                    if (tkn->ident.src[k] != baseType[k]) break;
-                }
-                if (k == tkn->ident.len) {
-                    dest->base.kind = kBaseTypes[i];
-                    break;
-                }
-            }
-            if (i == kNumBaseTypes) {
-                todo("Unknown type should be converted into a named type\n");
-                dx_err(at_token(l->finfo, tkn), "Unknown type\n");
-                return true;
-            }
+        case TokenType::kIdent:
+            dest->kind = TypeKind::kNamed;
+            dest->name.ident = tkn->ident;
+            dest->name.ref = nullptr;
             lex_next(l);  // next 'ident'
             break;
-        }
         case TokenType::kPtr: {
             dest->kind = TypeKind::kPtr;
             lex_next(l);  // next *
@@ -204,7 +188,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
         }
         case TokenType::kLParen: {
             dest->kind = TypeKind::kFuncTy;
-            dest->func.paramTys = {};
+            dest->funcTy.paramTys = {};
             lex_next(l);  // next (
             for (;;) {
                 Token *tkn = lex_peek(l);
@@ -220,7 +204,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
 
                 Type *argTy = mem::malloc<Type>();
                 if (r_parse_type(l, argTy)) return true;
-                dest->func.paramTys.add(argTy);
+                dest->funcTy.paramTys.add(argTy);
 
                 if (check_peek(l, TokenType::kComma)) {
                     lex_next(l);  // next ,
@@ -234,14 +218,18 @@ bool r_parse_type(Lexer *l, Type *dest) {
             }
             if (check_peek(l, TokenType::kArrow)) {
                 lex_next(l);  // next ->
-                dest->func.retTy = mem::malloc<Type>();
-                if (r_parse_type(l, dest->func.retTy)) return true;
+                dest->funcTy.retTy = mem::malloc<Type>();
+                if (r_parse_type(l, dest->funcTy.retTy)) return true;
             } else {
                 // TODO: builtin_type may/should be removed for prelude system
-                dest->func.retTy = &builtin_type::none;
+                dest->funcTy.retTy = builtin_type::none;
             }
             break;
         }
+        case TokenType::kType:
+            dest->kind = TypeKind::kType;
+            lex_next(l);  // next type
+            break;
         case TokenType::kEof: dx_err(at_token(l->finfo, tkn), "Expected a type but reached end of file\n");
         case TokenType::kErr: return true;
         default:
@@ -368,10 +356,10 @@ Node *parse_operand(Lexer *l) {
             }
             if (check_peek(l, TokenType::kArrow)) {
                 lex_next(l);  // next ->
-                func->func.retTy = parse_type(l);
-                if (!func->func.retTy) return nullptr;
+                func->func.staticRetTy = parse_type(l);
+                if (!func->func.staticRetTy) return nullptr;
             } else {
-                func->func.retTy = nullptr;
+                func->func.staticRetTy = nullptr;
             }
 
             if (check_peek(l, TokenType::kRetArrow)) {
@@ -634,70 +622,35 @@ Node *parse_block(Lexer *l) {
 
 }  // namespace
 
-Result parse_file(File *file) {
-    Lexer l{};
-    l.finfo = file->finfo;
-    lex_next(&l);  // Grab first lexer token
-    for (;;) {
-        if (check_peek(&l, TokenType::kEof)) return kAccept;
-        if (check_peek(&l, TokenType::kErr)) return kError;
-        if (check_peek(&l, TokenType::kDirective)) {
-            LStringView importDirective{"import", 6};
-            if (parse_directive(&l, importDirective)) return kError;
+Node *parse_global(Lexer *l) {
+    if (check_peek(l, TokenType::kEof)) return nullptr;
+    if (check_peek(l, TokenType::kErr)) return nullptr;
+    if (check_peek(l, TokenType::kDirective)) {
+        LStringView importDirective{"import", 6};
+        if (parse_directive(l, importDirective)) return nullptr;
 
-            Node *import = parse_import(&l);
-            if (!import) return kError;
-            if (Node **otherImport = file->imports.try_put(import->import.alias, import)) {
-                dx_err(at_node(l.finfo, import), "Duplicate import alias: %s\n", lstr_raw_str(import->import.alias));
-                dx_err(at_node(l.finfo, *otherImport), "Previous import here\n");
-                return kError;
+        Node *import = parse_import(l);
+        if (!import) return nullptr;
+        return import;
+    } else if (Node *declOrExpr = parse_decl_or_expr(l)) {
+        if (declOrExpr->kind == NodeKind::kDecl) {
+            if (!declOrExpr->decl.isDecl) {
+                dx_err(at_node(declOrExpr->decl.file->finfo, declOrExpr), "Assignment cannot be in global scope\n");
+                return nullptr;
             }
-        } else if (Node *declOrExpr = parse_decl_or_expr(&l)) {
-            if (declOrExpr->kind == NodeKind::kDecl) {
-                if (!declOrExpr->decl.isDecl) {
-                    dx_err(at_node(l.finfo, declOrExpr), "Assignment cannot be in global scope\n",
-                           node_kind_string(declOrExpr->kind));
-                    return kError;
-                }
-                declOrExpr->decl.file = file;
-
-                if (declOrExpr->decl.lval->kind != NodeKind::kName) {
-                    dx_err(at_node(file->finfo, declOrExpr->decl.lval),
-                           "Must only declare variable names in global scope\n");
-                    return kError;
-                }
-
-                LStringView &declName = declOrExpr->decl.lval->name.ident;
-                if (Node **other = file->package->globalDecls.try_put(declName, declOrExpr)) {
-                    Node *otherDecl = *other;
-                    dx_err(at_node(file->finfo, declOrExpr->decl.lval), "Duplicate declaration\n");
-                    dx_note(at_node(otherDecl->decl.file->finfo, otherDecl->decl.lval), "Previous declaration here\n");
-                    return kError;
-                }
-                if (Node **other = file->imports.get(declName)) {
-                    Node *otherImport = *other;
-                    dx_err(at_node(file->finfo, otherImport),
-                           "Import alias cannot have the same name as a declaration\n");
-                    dx_note(at_node(declOrExpr->decl.file->finfo, declOrExpr), "Declaration found here\n");
-                    return kError;
-                }
-                declOrExpr->decl.isBound = true;
-
-                if (!declOrExpr->decl.rval && !declOrExpr->decl.isExtern) {
-                    dx_err(at_node(file->finfo, declOrExpr),
-                           "Global declaration must be defined with a value or marked as #extern\n");
-                    return kError;
-                }
-            } else {
-                dx_err(at_node(l.finfo, declOrExpr), "%s expression cannot be in global scope\n",
-                       node_kind_string(declOrExpr->kind));
-                return kError;
+            if (!declOrExpr->decl.rval && !declOrExpr->decl.isExtern) {
+                dx_err(at_node(declOrExpr->decl.file->finfo, declOrExpr),
+                       "Global declaration must be defined with a value or marked as #extern\n");
+                return nullptr;
             }
+            return declOrExpr;
         } else {
-            return kError;
+            dx_err(at_node(l->finfo, declOrExpr), "%s expression cannot be in global scope\n",
+                   node_kind_string(declOrExpr->kind));
+            return nullptr;
         }
     }
-    return kAccept;
+    return nullptr;
 }
 
 }  // namespace lcc

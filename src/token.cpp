@@ -117,6 +117,7 @@ constexpr TokenType kKeywords[]{
     TokenType::kElse,
     TokenType::kIf,
     TokenType::kRet,
+    TokenType::kType,
     TokenType::kWhile,
 };
 // clang-format on
@@ -315,14 +316,6 @@ Token *lex_next(Lexer *l) {
         case ')': l->curLen++; return create_token(l, TokenType::kRParen);
         case '{': l->curLen++; return create_token(l, TokenType::kLCurl);
         case '}': l->curLen++; return create_token(l, TokenType::kRCurl);
-        case '=':
-            l->curLen++;
-            if (peek_char(l) == '>') {
-                l->curLen++;
-                return create_token(l, TokenType::kRetArrow);
-            } else {
-                return create_token(l, TokenType::kAssign);
-            }
         case ':':
             l->curLen++;
             if (peek_char(l) == ':') {
@@ -330,6 +323,14 @@ Token *lex_next(Lexer *l) {
                 return create_token(l, TokenType::kLabel);
             } else {
                 return create_token(l, TokenType::kColon);
+            }
+        case '=':
+            l->curLen++;
+            if (peek_char(l) == '>') {
+                l->curLen++;
+                return create_token(l, TokenType::kRetArrow);
+            } else {
+                return create_token(l, TokenType::kAssign);
             }
         case ',': l->curLen++; return create_token(l, TokenType::kComma);
         case 0: return create_eof_token(l);

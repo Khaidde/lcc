@@ -141,8 +141,151 @@ ErrCode parse_args(FlagParserInfo &finfo) {
 
 }  // namespace
 
-CompilationContext resolve_packages(const char *mainFile) {
+ErrCode command_line(int argc, char **argv) {
+    FlagParserInfo finfo{argv, argc};
+    if (parse_args(finfo) == ErrCode::kFailure) {
+        return ErrCode::kFailure;
+    }
+
+    if (compile(finfo.inputFile) != ErrCode::kSuccess) {
+        return ErrCode::kFailure;
+    }
+
+    info("output-file: %s\n", finfo.outputFile);
+
+    return ErrCode::kSuccess;
+}
+
+ErrCode compile(const char *path) {
+    if (!file::is_regular_file(path)) {
+        err("Input path must link to a regular file\n");
+        return ErrCode::kFailure;
+    }
+
+    // TODO: figure out a better way to hardcode the preload file
+    CompilationContext cmp = preload("./lib/preload.tc");
+    if (resolve_packages(cmp, path) == ErrCode::kFailure) return ErrCode::kFailure;
+
+    LStringView root{".", 1};
+    Package *pkg = *cmp.packageMap.get(root);
+    File *file = pkg->files.get(0);
+    info("Compiling %s ...\n", file->finfo->path);
+
+    // Semantic analysis of the file
+    cmp.currFile = file;
+    if (analyze_file(&cmp)) return ErrCode::kFailure;
+
+    pkg = *cmp.packageMap.get(root);
+    // Print all declarations in the current package
+    for (size_t i = 0; i < pkg->globalDecls.capacity; i++) {
+        auto &entry = pkg->globalDecls.table[i];
+        if (entry.psl) {
+            print_ast(entry.val);
+        }
+    }
+
+    return ErrCode::kSuccess;
+}
+
+ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) {
+    if (file::read_file(&file->finfo, filename) != file::FileErrCode::kSuccess) {
+        err("Failed to read file: %s\n", filename);
+        return ErrCode::kFailure;
+    }
+    file->imports.init();
+
+    Lexer l{};
+    l.finfo = file->finfo;
+    lex_next(&l);  // Grab first lexer token
+    for (;;) {
+        if (lex_peek(&l)->type == TokenType::kEof) return ErrCode::kSuccess;
+        if (lex_peek(&l)->type == TokenType::kErr) return ErrCode::kFailure;
+        Node *global = parse_global(&l);
+        if (global->kind == NodeKind::kImport) {
+            if (Node **otherImport = file->imports.try_put(global->import.alias, global)) {
+                dx_err(at_node(l.finfo, global), "Duplicate package alias: %s\n", lstr_raw_str(global->import.alias));
+                dx_err(at_node(l.finfo, *otherImport), "Previous import here\n");
+                return ErrCode::kFailure;
+            }
+        } else if (global->kind == NodeKind::kDecl) {
+            global->decl.file = file;
+
+            LStringView &declName = global->decl.lval->name.ident;
+            if (Node **preload = cmp.preloadPkg->globalDecls.get(declName)) {
+                Node *preloadDecl = *preload;
+                dx_err(at_node(file->finfo, global->decl.lval), "Declaration cannot have the name '%s'\n",
+                       lstr_raw_str(preloadDecl->decl.lval->name.ident));
+                return ErrCode::kFailure;
+            }
+            if (Node **other = file->package->globalDecls.try_put(declName, global)) {
+                Node *otherDecl = *other;
+                dx_err(at_node(file->finfo, global->decl.lval), "Duplicate declaration\n");
+                dx_note(at_node(otherDecl->decl.file->finfo, otherDecl->decl.lval), "Previous declaration here\n");
+                return ErrCode::kFailure;
+            }
+            if (Node **other = file->imports.get(declName)) {
+                Node *otherImport = *other;
+                dx_err(at_node(file->finfo, otherImport), "Package alias cannot have the same name as a declaration\n");
+                dx_note(at_node(global->decl.file->finfo, global), "Declaration found here\n");
+                return ErrCode::kFailure;
+            }
+            global->decl.isBound = true;
+        }
+    }
+}
+
+CompilationContext preload(const char *preloadFilePath) {
     CompilationContext cmp;
+    info("Compiling %s ...\n", preloadFilePath);
+
+    // Prepare stacks for analysis of entire program
+    cmp.scopeStack = scope_init();
+    cmp.resolveFuncBodyStack = {};
+    cmp.currNumPendingFunc = 0;
+
+    assert(file::is_regular_file(preloadFilePath));
+
+    File *preloadFile = mem::malloc<File>();
+    file::FileErrCode errCode = file::read_file(&preloadFile->finfo, preloadFilePath);
+    if (errCode != file::FileErrCode::kSuccess) assert(false);
+    preloadFile->imports.init();
+
+    cmp.preloadPkg = mem::malloc<Package>();
+    cmp.preloadPkg->files.init(1);
+    cmp.preloadPkg->files.add(preloadFile);
+    cmp.preloadPkg->globalDecls.init();
+    preloadFile->package = cmp.preloadPkg;
+
+    File *file = mem::malloc<File>();
+    file->package = cmp.preloadPkg;
+    cmp.preloadPkg->files.add(file);
+    ErrCode parseRes = resolve_file(cmp, file, preloadFilePath);
+    if (parseRes != ErrCode::kSuccess) assert(false);
+
+    cmp.currFile = preloadFile;
+    if (analyze_file(&cmp) != kAccept) assert(false);
+
+    builtin_type::none = mem::malloc<Type>();
+    builtin_type::none->kind = TypeKind::kNone;
+
+    builtin_type::u16 = mem::malloc<Type>();
+    builtin_type::u16->kind = TypeKind::kNamed;
+    builtin_type::u16->name.ident = {"u16", 3};
+    Node **u16Ref = cmp.preloadPkg->globalDecls.get(builtin_type::u16->name.ident);
+    assert(u16Ref);
+    builtin_type::u16->name.ref = *u16Ref;
+
+    builtin_type::string = mem::malloc<Type>();
+    builtin_type::string->kind = TypeKind::kNamed;
+    builtin_type::string->name.ident = {"string", 6};
+    Node **stringRef = cmp.preloadPkg->globalDecls.get(builtin_type::string->name.ident);
+    assert(stringRef);
+    builtin_type::string->name.ref = *stringRef;
+
+    return cmp;
+}
+
+ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     cmp.packageMap.init();
 
     struct ImportContext {
@@ -173,8 +316,7 @@ CompilationContext resolve_packages(const char *mainFile) {
             if (file::file_in_dir(filenames, pkgDir) == file::FileErrCode::kNotFound) {
                 err("Could not find package '%s' imported by '%s'\n", lstr_raw_str(importCtx.importName),
                     importCtx.srcFile->finfo->path);
-                cmp.isPackageResolutionSuccesful = false;
-                return cmp;
+                return ErrCode::kFailure;
             }
             info("Importing package '%s' ...\n", lstr_raw_str(importCtx.importName));
 
@@ -182,22 +324,11 @@ CompilationContext resolve_packages(const char *mainFile) {
             pkg->files = {};
             pkg->globalDecls.init();
             cmp.packageMap.try_put(importCtx.importName, pkg);
-
             for (size_t i = 0; i < filenames.size; i++) {
-                // Parse file
                 File *file = mem::malloc<File>();
-                if (file::read_file(&file->finfo, filenames.get(i).data) != file::FileErrCode::kSuccess) {
-                    err("Failed to read file: %s\n", filenames.get(i).data);
-                    cmp.isPackageResolutionSuccesful = false;
-                    return cmp;
-                }
                 file->package = pkg;
-                file->imports.init();
                 pkg->files.add(file);
-                if (parse_file(file)) {
-                    cmp.isPackageResolutionSuccesful = false;
-                    return cmp;
-                }
+                if (resolve_file(cmp, file, filenames.get(i).data) == ErrCode::kFailure) return ErrCode::kFailure;
 
                 // Add pending imports in current file to import stack
                 for (size_t k = 0; k < file->imports.capacity; k++) {
@@ -220,8 +351,7 @@ CompilationContext resolve_packages(const char *mainFile) {
                             dx_err(at_node(file->finfo, entry.val),
                                    "Import alias cannot have the same name as a declaration\n");
                             dx_note(at_node((*decl)->decl.file->finfo, *decl), "Declaration found here\n");
-                            cmp.isPackageResolutionSuccesful = false;
-                            return cmp;
+                            return ErrCode::kFailure;
                         }
                     }
                 }
@@ -230,59 +360,6 @@ CompilationContext resolve_packages(const char *mainFile) {
 
         filenames.size = 0;
     }
-    cmp.isPackageResolutionSuccesful = true;
-    return cmp;
-}
-
-ErrCode command_line(int argc, char **argv) {
-    FlagParserInfo finfo{argv, argc};
-    if (parse_args(finfo) == ErrCode::kFailure) {
-        return ErrCode::kFailure;
-    }
-
-    if (compile(finfo.inputFile) != ErrCode::kSuccess) {
-        return ErrCode::kFailure;
-    }
-
-    info("output-file: %s\n", finfo.outputFile);
-
-    return ErrCode::kSuccess;
-}
-
-ErrCode compile(const char *path) {
-    if (!file::is_regular_file(path)) {
-        err("Input path must link to a regular file\n");
-        return ErrCode::kFailure;
-    }
-
-    CompilationContext cmp = resolve_packages(path);
-    if (!cmp.isPackageResolutionSuccesful) {
-        return ErrCode::kFailure;
-    }
-
-    // Prepare stacks for analysis of entire program
-    cmp.scopeStack = scope_init();
-    cmp.resolveFuncBodyStack = {};
-    cmp.currNumPendingFunc = 0;
-
-    LStringView root{".", 1};
-    Package *pkg = *cmp.packageMap.get(root);
-    File *file = pkg->files.get(0);
-    info("Compiling %s ...\n", file->finfo->path);
-
-    // Semantic analysis of the file
-    cmp.currFile = file;
-    if (analyze_file(&cmp)) return ErrCode::kFailure;
-
-    pkg = *cmp.packageMap.get(root);
-    // Print all declarations in the current package
-    for (size_t i = 0; i < pkg->globalDecls.capacity; i++) {
-        auto &entry = pkg->globalDecls.table[i];
-        if (entry.psl) {
-            print_ast(entry.val);
-        }
-    }
-
     return ErrCode::kSuccess;
 }
 

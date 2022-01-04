@@ -6,24 +6,26 @@ namespace lcc {
 
 namespace builtin_type {
 
-Type none = {TypeKind::kNone, {}};
-Type u16 = {TypeKind::kBase, {{BaseTypeKind::u16}}};
-Type string = {TypeKind::kBase, {{BaseTypeKind::string}}};
+Type *none{nullptr};
+Type *u16{nullptr};
+Type *string{nullptr};
 
 }  // namespace builtin_type
-
-const char *base_type_string(BaseTypeKind kind) {
-    switch (kind) {
-        case BaseTypeKind::u16: return "u16";
-        case BaseTypeKind::string: return "string";
-    }
-}
 
 // TODO: optimize this, particularly look at all string creations in function type
 const char *type_string(Type *type) {
     switch (type->kind) {
         case TypeKind::kNone: return "none";
-        case TypeKind::kBase: return base_type_string(type->base.kind);
+        case TypeKind::kType: return "type";
+        case TypeKind::kNamed: {
+            LString res = lstr_create(type->name.ident);
+            if (type->name.ref && !lstr_equal(type->name.ident, type->name.ref->decl.lval->name.ident)) {
+                lstr_cat(res, "|aka ");
+                lstr_cat(res, type->name.ref->decl.lval->name.ident);
+                lstr_cat(res, "|");
+            }
+            return res.data;
+        }
         case TypeKind::kPtr: {
             LString res = lstr_create("*");
             lstr_cat(res, type_string(type->ptr.inner));
@@ -31,15 +33,15 @@ const char *type_string(Type *type) {
         }
         case TypeKind::kFuncTy: {
             LString res = lstr_create("(");
-            for (size_t i = 0; i < type->func.paramTys.size; i++) {
-                lstr_cat(res, type_string(type->func.paramTys.get(i)));
-                if (i + 1 < type->func.paramTys.size) {
+            for (size_t i = 0; i < type->funcTy.paramTys.size; i++) {
+                lstr_cat(res, type_string(type->funcTy.paramTys.get(i)));
+                if (i + 1 < type->funcTy.paramTys.size) {
                     lstr_cat(res, ", ");
                 }
             }
             lstr_cat(res, ") -> ");
-            if (type->func.retTy) {
-                lstr_cat(res, type_string(type->func.retTy));
+            if (type->funcTy.retTy) {
+                lstr_cat(res, type_string(type->funcTy.retTy));
             } else {
                 lstr_cat(res, "none");
             }
@@ -112,7 +114,7 @@ void r_print_ast(Node *node, size_t depth) {
             break;
         case NodeKind::kType:
             print_color(kAnsiColorRed);
-            printf("'%s'", type_string(&node->type));
+            printf("'%s'\n", type_string(&node->type));
             reset_print_color();
             break;
         case NodeKind::kIntLit:
@@ -162,9 +164,9 @@ void r_print_ast(Node *node, size_t depth) {
             }
             break;
         case NodeKind::kFunc:
-            if (node->func.retTy) {
+            if (node->func.staticRetTy) {
                 print_color(kAnsiColorYellow);
-                printf(" '%s'", type_string(&node->func.retTy->type));
+                printf(" '%s'", type_string(&node->func.staticRetTy->type));
                 reset_print_color();
             }
             printf("\n");

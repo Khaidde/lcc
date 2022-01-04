@@ -10,11 +10,13 @@ enum class ErrCode {
     kFailure,
 };
 
-CompilationContext resolve_packages(const char *mainFile);
-
 ErrCode command_line(int argc, char **argv);
 
 ErrCode compile(const char *path);
+
+CompilationContext preload(const char *preloadFilePath);
+
+ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile);
 
 }  // namespace lcc
 
