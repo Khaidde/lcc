@@ -1,7 +1,7 @@
 #ifndef LCC_ANALYSIS_HPP
 #define LCC_ANALYSIS_HPP
 
-#include "types.hpp"
+#include "compilation.hpp"
 
 namespace lcc {
 

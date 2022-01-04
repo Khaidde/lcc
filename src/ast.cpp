@@ -12,7 +12,6 @@ Type *string{nullptr};
 
 }  // namespace builtin_type
 
-// TODO: optimize this, particularly look at all string creations in function type
 const char *type_string(Type *type) {
     switch (type->kind) {
         case TypeKind::kNone: return "none";
@@ -209,11 +208,6 @@ void r_print_ast(Node *node, size_t depth) {
             r_print_ast(node->whilestmt.loop, depth + 1);
             break;
         case NodeKind::kRet:
-            if (node->ret.resolvedTy) {
-                print_color(kAnsiColorYellow);
-                printf(" '%s'", type_string(node->ret.resolvedTy));
-                reset_print_color();
-            }
             printf("\n");
 
             if (node->ret.value) {

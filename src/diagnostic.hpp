@@ -4,8 +4,8 @@
 #include <cstdint>
 
 #include "ast.hpp"
+#include "compilation.hpp"
 #include "token.hpp"
-#include "types.hpp"
 #include "util.hpp"
 
 namespace lcc {

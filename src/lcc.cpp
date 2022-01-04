@@ -4,12 +4,12 @@
 #include <cstring>
 
 #include "analysis.hpp"
+#include "compilation.hpp"
 #include "diagnostic.hpp"
 #include "lstring.hpp"
 #include "parse.hpp"
 #include "print.hpp"
 #include "scope.hpp"
-#include "types.hpp"
 
 namespace lcc {
 
@@ -139,54 +139,6 @@ ErrCode parse_args(FlagParserInfo &finfo) {
     return ErrCode::kSuccess;
 }
 
-}  // namespace
-
-ErrCode command_line(int argc, char **argv) {
-    FlagParserInfo finfo{argv, argc};
-    if (parse_args(finfo) == ErrCode::kFailure) {
-        return ErrCode::kFailure;
-    }
-
-    if (compile(finfo.inputFile) != ErrCode::kSuccess) {
-        return ErrCode::kFailure;
-    }
-
-    info("output-file: %s\n", finfo.outputFile);
-
-    return ErrCode::kSuccess;
-}
-
-ErrCode compile(const char *path) {
-    if (!file::is_regular_file(path)) {
-        err("Input path must link to a regular file\n");
-        return ErrCode::kFailure;
-    }
-
-    // TODO: figure out a better way to hardcode the preload file
-    CompilationContext cmp = preload("./lib/preload.tc");
-    if (resolve_packages(cmp, path) == ErrCode::kFailure) return ErrCode::kFailure;
-
-    LStringView root{".", 1};
-    Package *pkg = *cmp.packageMap.get(root);
-    File *file = pkg->files.get(0);
-    info("Compiling %s ...\n", file->finfo->path);
-
-    // Semantic analysis of the file
-    cmp.currFile = file;
-    if (analyze_file(&cmp)) return ErrCode::kFailure;
-
-    pkg = *cmp.packageMap.get(root);
-    // Print all declarations in the current package
-    for (size_t i = 0; i < pkg->globalDecls.capacity; i++) {
-        auto &entry = pkg->globalDecls.table[i];
-        if (entry.psl) {
-            print_ast(entry.val);
-        }
-    }
-
-    return ErrCode::kSuccess;
-}
-
 ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) {
     if (file::read_file(&file->finfo, filename) != file::FileErrCode::kSuccess) {
         err("Failed to read file: %s\n", filename);
@@ -285,6 +237,15 @@ CompilationContext preload(const char *preloadFilePath) {
     return cmp;
 }
 
+void join_path(LString &dir, LStringView &file) {
+    if (file.len != 1 || file.src[0] != '.') {
+        lstr_cat(dir, "/");
+        lstr_cat(dir, file);
+    } else {
+        dir.data[dir.size - 1] = '\0';
+    }
+}
+
 ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     cmp.packageMap.init();
 
@@ -294,10 +255,15 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     };
     LList<ImportContext> importStack{};
 
+    // TODO: handle better way of hardcoding path to standard lib files
+    const char *libDir = "./lib";
+    size_t libDirLen = 5;
+    LString libDirBuf = lstr_create(libDir);
+
     LStringView rootDir = file::split_dir(mainFile);
     importStack.add({nullptr, {".", 1}});
+    LString rootDirBuf = lstr_create(rootDir);
 
-    LString pkgDir = lstr_create(rootDir);
     LList<LString> filenames{};
     while (importStack.size) {
         // Get next import to resolve
@@ -305,21 +271,24 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
         importStack.size--;
 
         if (!cmp.packageMap.get(importCtx.importName)) {
-            // Find all files in the package if package directory exists
-            pkgDir.size = rootDir.len + 1;
-            if (importCtx.importName.len != 1 || importCtx.importName.src[0] != '.') {
-                lstr_cat(pkgDir, "/");
-                lstr_cat(pkgDir, importCtx.importName);
-            } else {
-                pkgDir.data[pkgDir.size - 1] = '\0';
-            }
-            if (file::file_in_dir(filenames, pkgDir) == file::FileErrCode::kNotFound) {
-                err("Could not find package '%s' imported by '%s'\n", lstr_raw_str(importCtx.importName),
-                    importCtx.srcFile->finfo->path);
-                return ErrCode::kFailure;
+            // Look through all possible directories for package name
+            rootDirBuf.size = rootDir.len + 1;
+            join_path(rootDirBuf, importCtx.importName);
+            if (file::file_in_dir(filenames, rootDirBuf) == file::FileErrCode::kNotFound) {
+                libDirBuf.size = libDirLen + 1;
+                join_path(libDirBuf, importCtx.importName);
+                if (file::file_in_dir(filenames, libDirBuf) == file::FileErrCode::kNotFound) {
+                    err("Could not find package '%s' imported by '%s'\n", lstr_raw_str(importCtx.importName),
+                        importCtx.srcFile->finfo->path);
+                    printf("Checked directories:\n");
+                    printf("\t  %s\n", lstr_raw_str(rootDir));
+                    printf("\t  %s\n", libDir);
+                    return ErrCode::kFailure;
+                }
             }
             info("Importing package '%s' ...\n", lstr_raw_str(importCtx.importName));
 
+            // Find all files in the package
             Package *pkg = mem::malloc<Package>();
             pkg->files = {};
             pkg->globalDecls.init();
@@ -360,6 +329,54 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
 
         filenames.size = 0;
     }
+    return ErrCode::kSuccess;
+}
+
+}  // namespace
+
+ErrCode command_line(int argc, char **argv) {
+    FlagParserInfo finfo{argv, argc};
+    if (parse_args(finfo) == ErrCode::kFailure) {
+        return ErrCode::kFailure;
+    }
+
+    if (compile(finfo.inputFile) != ErrCode::kSuccess) {
+        return ErrCode::kFailure;
+    }
+
+    info("output-file: %s\n", finfo.outputFile);
+
+    return ErrCode::kSuccess;
+}
+
+ErrCode compile(const char *path) {
+    if (!file::is_regular_file(path)) {
+        err("Input path must link to a regular file\n");
+        return ErrCode::kFailure;
+    }
+
+    // TODO: figure out a better way to hardcode the preload file
+    CompilationContext cmp = preload("./lib/preload.tc");
+    if (resolve_packages(cmp, path) == ErrCode::kFailure) return ErrCode::kFailure;
+
+    LStringView root{".", 1};
+    Package *pkg = *cmp.packageMap.get(root);
+    File *file = pkg->files.get(0);
+    info("Compiling %s ...\n", file->finfo->path);
+
+    // Semantic analysis of the file
+    cmp.currFile = file;
+    if (analyze_file(&cmp)) return ErrCode::kFailure;
+
+    pkg = *cmp.packageMap.get(root);
+    // Print all declarations in the current package
+    for (size_t i = 0; i < pkg->globalDecls.capacity; i++) {
+        auto &entry = pkg->globalDecls.table[i];
+        if (entry.psl) {
+            print_ast(entry.val);
+        }
+    }
+
     return ErrCode::kSuccess;
 }
 

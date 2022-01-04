@@ -1,13 +1,18 @@
 #include "analysis.hpp"
 
+#include "compilation.hpp"
 #include "diagnostic.hpp"
 #include "print.hpp"
 #include "scope.hpp"
-#include "types.hpp"
 
 namespace lcc {
 
 namespace {
+
+Result analyze_function_bodies(CompilationContext *cmp);
+Result analyze_decl(CompilationContext *cmp, Node *decl);
+Type *resolve_type(CompilationContext *cmp, Node *expr);
+Result analyze_block(CompilationContext *cmp, Node *block);
 
 Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
     scope_enter(cmp->scopeStack, func);
@@ -23,8 +28,6 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
     }
     return kAccept;
 }
-
-Result analyze_function_bodies(CompilationContext *cmp);
 
 Node *import_lookup(CompilationContext *cmp, LStringView &symbol) {
     if (Node **import = cmp->currFile->imports.get(symbol)) {
@@ -104,8 +107,6 @@ bool is_numeric_type(Type *type) {
         case TypeKind::kFuncTy: return false;
     }
 }
-
-Result analyze_decl(CompilationContext *cmp, Node *decl);
 
 Type *resolve_expanded_decl_type(CompilationContext *cmp, Node *expansion) {
     assert(expansion->kind == NodeKind::kDecl);
@@ -228,8 +229,6 @@ Node *expand_dot_access(CompilationContext *cmp, Node *dotAccessRef) {
     assert(false && "Import/packages should have been resolved before analysis\n");
     return nullptr;
 }
-
-Type *resolve_type(CompilationContext *cmp, Node *expr);
 
 Type *resolve_prefix(CompilationContext *cmp, Node *prefix) {
     assert(prefix->kind == NodeKind::kPrefix);
@@ -410,7 +409,6 @@ Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
     }
     decl->decl.isResolving = true;
 
-    bool hasTy = decl->decl.staticTy;
     bool hasRval = decl->decl.rval;
     if (hasRval) {
         decl->decl.resolvedTy = resolve_type(cmp, decl->decl.rval);
@@ -420,7 +418,7 @@ Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
             return kError;
         }
     }
-    if (hasTy) {
+    if (decl->decl.staticTy) {
         if (simplify_type_alias(cmp, decl->decl.staticTy)) return kError;
         Type *staticTy = &decl->decl.staticTy->type;
         if (hasRval) {
@@ -438,8 +436,6 @@ Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
     }
     return kAccept;
 }
-
-Result analyze_block(CompilationContext *cmp, Node *block);
 
 Result analyze_if(CompilationContext *cmp, Node *ifstmt) {
     Type *condType = resolve_type(cmp, ifstmt->ifstmt.cond);
@@ -538,23 +534,21 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 break;
             case NodeKind::kRet:
                 if (stmt->ret.value) {
-                    stmt->ret.resolvedTy = resolve_type(cmp, stmt->ret.value);
-                    if (!stmt->ret.resolvedTy) return kError;
+                    Type *retType = resolve_type(cmp, stmt->ret.value);
+                    if (!retType) return kError;
                     if (!cmp->currRetTy) {
                         dx_err(at_node(cmp->currFile->finfo, stmt),
-                               "Returns value of type '%s' but function has no return type\n",
-                               type_string(stmt->ret.resolvedTy));
+                               "Returns value of type '%s' but function has no return type\n", type_string(retType));
                         return kError;
                     }
-                    if (!is_type_equal(&cmp->currRetTy->type, stmt->ret.resolvedTy)) {
+                    if (!is_type_equal(&cmp->currRetTy->type, retType)) {
                         dx_err(at_node(cmp->currFile->finfo, stmt),
                                "Mismatched types: function return type is '%s', return statement type is '%s'\n",
-                               type_string(&cmp->currRetTy->type), type_string(stmt->ret.resolvedTy));
+                               type_string(&cmp->currRetTy->type), type_string(retType));
                         dx_note(at_node(cmp->currFile->finfo, cmp->currRetTy), "Return type specified here\n");
                         return kError;
                     }
                 } else {
-                    stmt->ret.resolvedTy = builtin_type::none;
                     if (cmp->currRetTy) {
                         dx_err(at_node(cmp->currFile->finfo, stmt), "Must return value of type '%s'\n",
                                type_string(&cmp->currRetTy->type));

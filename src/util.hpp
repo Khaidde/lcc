@@ -10,13 +10,13 @@ static_assert(false && "Big endian compilation not supported");
 
 namespace lcc {
 
-constexpr int comp_strcmp(char const *a, char const *b) {
-    return (*a != *b || *a == '\0') ? *a - *b : comp_strcmp(a + 1, b + 1);
+constexpr int comptime_strcmp(char const *a, char const *b) {
+    return (*a != *b || *a == '\0') ? *a - *b : comptime_strcmp(a + 1, b + 1);
 }
 
 constexpr bool is_sorted(size_t ndx, size_t numKeywords, const char *(get_str)(size_t)) {
     if (ndx >= numKeywords - 1) return true;
-    return comp_strcmp(get_str(ndx), get_str(ndx + 1)) <= 0 && is_sorted(ndx + 1, numKeywords, get_str);
+    return comptime_strcmp(get_str(ndx), get_str(ndx + 1)) <= 0 && is_sorted(ndx + 1, numKeywords, get_str);
 }
 
 #define ASSERT_ALPHABETIC(numStrings, getStrFromNdx)                                  \

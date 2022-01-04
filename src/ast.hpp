@@ -149,7 +149,6 @@ struct WhileNode {
 
 struct RetNode {
     Node *value;
-    Type *resolvedTy;
 };
 
 struct LoopBranchNode {

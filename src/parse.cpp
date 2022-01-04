@@ -8,6 +8,8 @@ namespace lcc {
 
 namespace {
 
+bool has_errors(Lexer *l) { return lex_peek(l)->type == TokenType::kErr; }
+
 bool check_peek(Lexer *l, TokenType type) { return lex_peek(l)->type == type; }
 
 Node *create_node(Lexer *l, NodeKind kind) {
@@ -32,9 +34,9 @@ Node *parse_expr(Lexer *l);
 Node *parse_block(Lexer *l);
 
 Result parse_directive(Lexer *l, LStringView &directive) {
-    assert(lex_peek(l)->type == TokenType::kDirective);
+    assert(check_peek(l, TokenType::kDirective));
     lex_next(l);  // next #
-    if (check_peek(l, TokenType::kErr)) return kError;
+    if (has_errors(l)) return kError;
     if (!check_peek(l, TokenType::kIdent)) {
         dx_err(at_token(l->finfo, lex_peek(l)), "Compiler directive must have a name\n");
         return kError;
@@ -45,7 +47,7 @@ Result parse_directive(Lexer *l, LStringView &directive) {
         return kError;
     }
     lex_next(l);  // next directive
-    if (check_peek(l, TokenType::kErr)) return kError;
+    if (has_errors(l)) return kError;
     return kAccept;
 }
 
@@ -54,33 +56,31 @@ Node *parse_import(Lexer *l) {
 
     bool hasAlias = true;
 
-    Token *tkn = lex_peek(l);
-    if (tkn->type == TokenType::kErr) return nullptr;
-    if (tkn->type == TokenType::kIdent) {
-        import->import.alias = tkn->ident;
+    if (has_errors(l)) return nullptr;
+    if (check_peek(l, TokenType::kIdent)) {
+        import->import.alias = lex_peek(l)->ident;
 
         lex_next(l);  // next 'ident'
-        if (check_peek(l, TokenType::kErr)) return nullptr;
-        tkn = lex_peek(l);
+        if (has_errors(l)) return nullptr;
     } else {
         hasAlias = false;
     }
     if (!check_peek(l, TokenType::kStrLiteral)) {
-        dx_err(at_token(l->finfo, tkn), "Expected package path after import keyword\n");
+        dx_err(at_token(l->finfo, lex_peek(l)), "Expected package path after import keyword\n");
         return nullptr;
     }
-    import->import.package = tkn->str;
+    import->import.package = lex_peek(l)->str;
     if (!hasAlias) {
         // Get rightmost directory to use as alias
-        const char *optr = &tkn->str.src[tkn->str.len - 1];
-        while (optr >= tkn->str.src) {
+        LStringView path = lex_peek(l)->str;
+        const char *optr = &path.src[path.len - 1];
+        while (optr >= path.src) {
             if (*optr == '/' || *optr == '\\') break;
             optr--;
         }
-        if (optr != tkn->str.src || *optr == '/' || *optr == '\\') optr++;
-        import->import.alias = {optr, tkn->str.len - (size_t)(optr - tkn->str.src)};
+        if (optr != path.src || *optr == '/' || *optr == '\\') optr++;
+        import->import.alias = {optr, path.len - (size_t)(optr - path.src)};
     }
-
     lex_next(l);  // next string
     end_node(l, import);
     return import;
@@ -124,7 +124,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     decl->decl.isBound = false;
     decl->decl.isUsed = false;
 
-    if (check_peek(l, TokenType::kErr)) return nullptr;
+    if (has_errors(l)) return nullptr;
     bool hasType = check_peek(l, TokenType::kColon);
     if (hasType) {
         if (decl->decl.lval->kind != NodeKind::kName) {
@@ -146,7 +146,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
         decl->decl.staticTy = nullptr;
     }
 
-    if (check_peek(l, TokenType::kErr)) return nullptr;
+    if (has_errors(l)) return nullptr;
     bool hasAssignment = check_peek(l, TokenType::kAssign);
     if (hasAssignment) {
         lex_next(l);  // next =
@@ -169,12 +169,11 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     return decl;
 }
 
-bool r_parse_type(Lexer *l, Type *dest) {
-    Token *tkn = lex_peek(l);
-    switch (tkn->type) {
+Result r_parse_type(Lexer *l, Type *dest) {
+    switch (lex_peek(l)->type) {
         case TokenType::kIdent:
             dest->kind = TypeKind::kNamed;
-            dest->name.ident = tkn->ident;
+            dest->name.ident = lex_peek(l)->ident;
             dest->name.ref = nullptr;
             lex_next(l);  // next 'ident'
             break;
@@ -183,7 +182,7 @@ bool r_parse_type(Lexer *l, Type *dest) {
             lex_next(l);  // next *
 
             dest->ptr.inner = mem::malloc<Type>();
-            if (r_parse_type(l, dest->ptr.inner)) return true;
+            if (r_parse_type(l, dest->ptr.inner)) return kError;
             break;
         }
         case TokenType::kLParen: {
@@ -191,19 +190,19 @@ bool r_parse_type(Lexer *l, Type *dest) {
             dest->funcTy.paramTys = {};
             lex_next(l);  // next (
             for (;;) {
-                Token *tkn = lex_peek(l);
-                if (tkn->type == TokenType::kErr) return true;
-                if (tkn->type == TokenType::kEof) {
-                    dx_err(at_token(l->finfo, tkn), "Expected argument type but reached end of file\n");
-                    return true;
+                if (has_errors(l)) return kError;
+                if (check_peek(l, TokenType::kEof)) {
+                    dx_err(at_token(l->finfo, lex_peek(l)), "Expected argument type but reached end of file\n");
+                    return kError;
                 }
-                if (tkn->type == TokenType::kRParen) {
+                if (has_errors(l)) return kError;
+                if (check_peek(l, TokenType::kRParen)) {
                     lex_next(l);  // next )
                     break;
                 }
 
                 Type *argTy = mem::malloc<Type>();
-                if (r_parse_type(l, argTy)) return true;
+                if (r_parse_type(l, argTy)) return kError;
                 dest->funcTy.paramTys.add(argTy);
 
                 if (check_peek(l, TokenType::kComma)) {
@@ -213,15 +212,14 @@ bool r_parse_type(Lexer *l, Type *dest) {
                     break;
                 } else {
                     dx_err(at_token(l->finfo, lex_peek(l)), "Expected , to separate argment types\n");
-                    return true;
+                    return kError;
                 }
             }
             if (check_peek(l, TokenType::kArrow)) {
                 lex_next(l);  // next ->
                 dest->funcTy.retTy = mem::malloc<Type>();
-                if (r_parse_type(l, dest->funcTy.retTy)) return true;
+                if (r_parse_type(l, dest->funcTy.retTy)) return kError;
             } else {
-                // TODO: builtin_type may/should be removed for prelude system
                 dest->funcTy.retTy = builtin_type::none;
             }
             break;
@@ -230,13 +228,14 @@ bool r_parse_type(Lexer *l, Type *dest) {
             dest->kind = TypeKind::kType;
             lex_next(l);  // next type
             break;
-        case TokenType::kEof: dx_err(at_token(l->finfo, tkn), "Expected a type but reached end of file\n");
-        case TokenType::kErr: return true;
+        case TokenType::kEof: dx_err(at_token(l->finfo, lex_peek(l)), "Expected a type but reached end of file\n");
+        case TokenType::kErr: return kError;
         default:
-            dx_err(at_token(l->finfo, tkn), "Expected a type but instead got %s\n", token_type_string(tkn->type));
-            return true;
+            dx_err(at_token(l->finfo, lex_peek(l)), "Expected a type but instead got %s\n",
+                   token_type_string(lex_peek(l)->type));
+            return kError;
     }
-    return false;
+    return kAccept;
 }
 
 Node *parse_type(Lexer *l) {
@@ -323,13 +322,12 @@ Node *parse_operand(Lexer *l) {
             }
             lex_next(l);  // next (
             for (;;) {
-                Token *tkn = lex_peek(l);
-                if (tkn->type == TokenType::kErr) return nullptr;
-                if (tkn->type == TokenType::kEof) {
+                if (has_errors(l)) return nullptr;
+                if (check_peek(l, TokenType::kEof)) {
                     dx_err(at_token(l->finfo, tkn), "Expected parameter declaration but reached end of file\n");
                     return nullptr;
                 }
-                if (tkn->type == TokenType::kRParen) {
+                if (check_peek(l, TokenType::kRParen)) {
                     lex_next(l);  // next )
                     break;
                 }
@@ -390,7 +388,7 @@ Node *parse_operand(Lexer *l) {
 Node *parse_infix(Lexer *l, int lprec, Node *left) {
     while (left) {
         TokenType op = lex_peek(l)->type;
-        if (op == TokenType::kErr) return nullptr;
+        if (has_errors(l)) return nullptr;
 
         int rprec = get_precedence(op);
         if (lprec >= rprec) break;
@@ -423,13 +421,13 @@ Node *parse_infix(Lexer *l, int lprec, Node *left) {
                 call->call.callee = left;
                 lex_next(l);  // next (
                 for (;;) {
-                    Token *tkn = lex_peek(l);
-                    if (tkn->type == TokenType::kErr) return nullptr;
-                    if (tkn->type == TokenType::kEof) {
-                        dx_err(at_token(l->finfo, tkn), "Expected argument expression but reached end of file\n");
+                    if (has_errors(l)) return nullptr;
+                    if (check_peek(l, TokenType::kEof)) {
+                        dx_err(at_token(l->finfo, lex_peek(l)),
+                               "Expected argument expression but reached end of file\n");
                         return nullptr;
                     }
-                    if (tkn->type == TokenType::kRParen) {
+                    if (check_peek(l, TokenType::kRParen)) {
                         lex_next(l);  // next )
                         break;
                     }
@@ -524,12 +522,11 @@ Node *parse_block(Lexer *l) {
     lex_next(l);  // next {
 
     for (;;) {
-        Token *tkn = lex_peek(l);
-        if (tkn->type == TokenType::kRCurl) {
+        if (check_peek(l, TokenType::kRCurl)) {
             lex_next(l);  // next }
             break;
         }
-        switch (tkn->type) {
+        switch (lex_peek(l)->type) {
             case TokenType::kLCurl:
                 if (Node *innerBlock = parse_block(l)) {
                     block->block.stmts.add(innerBlock);
@@ -570,8 +567,7 @@ Node *parse_block(Lexer *l) {
             case TokenType::kRet: {
                 Node *ret = create_node(l, NodeKind::kRet);
                 ret->ret.value = nullptr;  // Return values are obtained in following statements
-                ret->ret.resolvedTy = nullptr;
-                lex_next(l);  // next ret
+                lex_next(l);               // next ret
                 end_node(l, ret);
                 block->block.stmts.add(ret);
                 break;
@@ -581,7 +577,7 @@ Node *parse_block(Lexer *l) {
                 Node *loopbr = create_node(l, NodeKind::kLoopBr);
                 loopbr->loopbr.isBreak = check_peek(l, TokenType::kBreak);
                 lex_next(l);  // next break or cont
-                if (check_peek(l, TokenType::kErr)) return nullptr;
+                if (has_errors(l)) return nullptr;
                 if (check_peek(l, TokenType::kIdent)) {
                     loopbr->loopbr.label = lex_peek(l)->ident;
                     lex_next(l);  // next 'ident'
@@ -623,8 +619,8 @@ Node *parse_block(Lexer *l) {
 }  // namespace
 
 Node *parse_global(Lexer *l) {
+    if (has_errors(l)) return nullptr;
     if (check_peek(l, TokenType::kEof)) return nullptr;
-    if (check_peek(l, TokenType::kErr)) return nullptr;
     if (check_peek(l, TokenType::kDirective)) {
         LStringView importDirective{"import", 6};
         if (parse_directive(l, importDirective)) return nullptr;

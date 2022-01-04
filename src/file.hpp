@@ -1,9 +1,9 @@
 #ifndef LCC_FILE_HPP
 #define LCC_FILE_HPP
 
+#include "compilation.hpp"
 #include "list.hpp"
 #include "lstring.hpp"
-#include "types.hpp"
 
 namespace lcc::file {
 
