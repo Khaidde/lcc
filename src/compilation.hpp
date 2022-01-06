@@ -25,11 +25,14 @@ struct File {
     struct Package *package;
     FileInfo *finfo;
 
+    Node *importListHead;
     LMap<LStringView, Node *, lstr_hash, lstr_equal> imports;
 };
 
 struct Package {
+    Node *globalDeclListHead;
     LMap<LStringView, Node *, lstr_hash, lstr_equal> globalDecls;
+
     LList<File *> files;
 };
 

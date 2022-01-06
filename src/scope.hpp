@@ -10,7 +10,9 @@
 namespace lcc {
 
 struct Scope {
+    Node *declListHead;
     LMap<LStringView, Node *, lstr_hash, lstr_equal> decls;
+
     Node *owner;
 };
 

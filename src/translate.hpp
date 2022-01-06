@@ -1,0 +1,162 @@
+#ifndef LCC_TRANSLATE_HPP
+#define LCC_TRANSLATE_HPP
+
+#include "list.hpp"
+
+namespace lcc {
+
+struct BasicBlock;
+
+using BlockId = size_t;
+using ValId = size_t;
+
+enum class IrInstrKind {
+    kAssign,
+    kCond,
+    kGoto,
+};
+
+struct ConstOperand {
+    // TODO: implement structure for constant data
+};
+
+enum class BinKind {
+    kAdd,
+};
+
+struct BinOperand {
+    ValId left;
+    BinKind kind;
+    ValId right;
+};
+
+struct CallOperand {
+    // TODO: should also contain name of call
+    ValId *args;
+};
+
+enum class OperandKind {
+    kConst,
+    kBin,
+    kCall,
+};
+
+struct Operand {
+    OperandKind kind;
+    union {
+        ConstOperand constOp;
+        BinOperand binOp;
+        CallOperand callOp;
+    };
+};
+
+struct AssignIrInstr {
+    ValId dest;
+    Operand op;
+};
+
+struct BranchIrInstr {
+    BasicBlock *block;
+};
+
+struct CondIrInstr {
+    ValId cond;
+    BasicBlock *then;
+    BasicBlock *alt;
+};
+
+struct IrInstr {
+    IrInstrKind kind;
+    union {
+        AssignIrInstr assign;
+        BranchIrInstr branch;
+        CondIrInstr cond;
+    };
+};
+
+struct BasicBlock {
+    BlockId id;
+    LList<IrInstr *> instrs;
+    LList<BasicBlock *> exits;
+};
+
+struct FunctionContext {
+    BasicBlock *entry;
+};
+
+struct IrContext {
+    // TODO: store a list of global constants
+    LList<BasicBlock *> basicBlocks{};
+    ValId valCnt{0};
+};
+
+void translate_function(struct Node *function);
+
+/*
+add = :(a: u16, b: u16) -> string {
+  c := a + b
+  if c > 2 {
+    ret "g2"
+  } else {
+    if (c < 3) {
+       ret "l2"
+    }
+    c = 4
+  }
+  nop()
+  ret "none"
+}
+
+===>
+
+constants [
+  0 = "g2"
+  1 = "l2"
+  2 = "none"
+]
+
+func0 {
+  debug a = v0
+  debug b = v1
+  // Return value stored in v2
+  debug c = v3
+
+  b0 {
+    v0 = recv 2 // Receive 2 bytes for argument a
+    v1 = recv 2
+    v3 = v0 + v1 // c := a + b
+    v4 = v3 > 2
+    if v4 : b1 else b2
+  }
+  b1 {
+    v2 = constants[0]
+    br b5
+  }
+  b2 {
+    v5 = 3
+    v6 = v3 < 3
+    if v6 : b3 else b4
+  }
+  b3 {
+    v2 = constants[1]
+    br b6
+  }
+  b4 {
+    v3 = 4
+    // Implicit br b5
+  }
+  b5 {
+    v7 = nop()
+    v2 = constants[2]
+    // Implicit br b6
+  }
+  b6 {
+    ret
+  }
+}
+
+ */
+
+}  // namespace lcc
+
+#endif

@@ -10,6 +10,7 @@
 #include "parse.hpp"
 #include "print.hpp"
 #include "scope.hpp"
+#include "translate.hpp"
 
 namespace lcc {
 
@@ -144,6 +145,7 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
         err("Failed to read file: %s\n", filename);
         return ErrCode::kFailure;
     }
+    file->importListHead = nullptr;
     file->imports.init();
 
     Lexer l{};
@@ -159,8 +161,11 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
                 dx_err(at_node(l.finfo, *otherImport), "Previous import here\n");
                 return ErrCode::kFailure;
             }
+
+            if (file->importListHead) global->import.nextImport = file->importListHead;
+            file->importListHead = global;
         } else if (global->kind == NodeKind::kDecl) {
-            global->decl.file = file;
+            global->decl.info->file = file;
 
             LStringView &declName = global->decl.lval->name.ident;
             if (Node **preload = cmp.preloadPkg->globalDecls.get(declName)) {
@@ -172,16 +177,14 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
             if (Node **other = file->package->globalDecls.try_put(declName, global)) {
                 Node *otherDecl = *other;
                 dx_err(at_node(file->finfo, global->decl.lval), "Duplicate declaration\n");
-                dx_note(at_node(otherDecl->decl.file->finfo, otherDecl->decl.lval), "Previous declaration here\n");
+                dx_note(at_node(otherDecl->decl.info->file->finfo, otherDecl->decl.lval),
+                        "Previous declaration here\n");
                 return ErrCode::kFailure;
             }
-            if (Node **other = file->imports.get(declName)) {
-                Node *otherImport = *other;
-                dx_err(at_node(file->finfo, otherImport), "Package alias cannot have the same name as a declaration\n");
-                dx_note(at_node(global->decl.file->finfo, global), "Declaration found here\n");
-                return ErrCode::kFailure;
-            }
-            global->decl.isBound = true;
+            global->decl.info->isBound = true;
+
+            if (file->package->globalDeclListHead) global->decl.info->nextDecl = file->package->globalDeclListHead;
+            file->package->globalDeclListHead = global;
         }
     }
 }
@@ -290,6 +293,7 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
 
             // Find all files in the package
             Package *pkg = mem::malloc<Package>();
+            pkg->globalDeclListHead = nullptr;
             pkg->files = {};
             pkg->globalDecls.init();
             cmp.packageMap.try_put(importCtx.importName, pkg);
@@ -298,31 +302,21 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
                 file->package = pkg;
                 pkg->files.add(file);
                 if (resolve_file(cmp, file, filenames.get(i).data) == ErrCode::kFailure) return ErrCode::kFailure;
-
-                // Add pending imports in current file to import stack
-                for (size_t k = 0; k < file->imports.capacity; k++) {
-                    if (file->imports.table[k].psl) {
-                        Node *import = file->imports.table[k].val;
-                        if (!cmp.packageMap.get(import->import.package)) {
-                            importStack.add({file, import->import.package});
-                        }
-                    }
-                }
             }
 
             // Make sure package aliases don't confict with declaration names
             for (size_t i = 0; i < pkg->files.size; i++) {
                 File *file = pkg->files.get(i);
-                for (size_t k = 0; k < file->imports.capacity; k++) {
-                    auto &entry = file->imports.table[k];
-                    if (entry.psl) {
-                        if (Node **decl = pkg->globalDecls.get(entry.val->import.alias)) {
-                            dx_err(at_node(file->finfo, entry.val),
-                                   "Import alias cannot have the same name as a declaration\n");
-                            dx_note(at_node((*decl)->decl.file->finfo, *decl), "Declaration found here\n");
-                            return ErrCode::kFailure;
-                        }
+                Node *curr = file->importListHead;
+                while (curr) {
+                    if (!cmp.packageMap.get(curr->import.package)) importStack.add({file, curr->import.package});
+                    if (Node **decl = pkg->globalDecls.get(curr->import.alias)) {
+                        dx_err(at_node(file->finfo, curr),
+                               "Package alias cannot have the same name as a declaration\n");
+                        dx_note(at_node((*decl)->decl.info->file->finfo, *decl), "Declaration found here\n");
+                        return ErrCode::kFailure;
                     }
+                    curr = curr->import.nextImport;
                 }
             }
         }  // end of package resolution
@@ -368,14 +362,7 @@ ErrCode compile(const char *path) {
     cmp.currFile = file;
     if (analyze_file(&cmp)) return ErrCode::kFailure;
 
-    pkg = *cmp.packageMap.get(root);
-    // Print all declarations in the current package
-    for (size_t i = 0; i < pkg->globalDecls.capacity; i++) {
-        auto &entry = pkg->globalDecls.table[i];
-        if (entry.psl) {
-            print_ast(entry.val);
-        }
-    }
+    print_decl_list((*cmp.packageMap.get(root))->globalDeclListHead);
 
     return ErrCode::kSuccess;
 }

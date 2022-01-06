@@ -1,4 +1,4 @@
-// #import "math"
+#import "math"
 
 #import "io"
 
@@ -9,6 +9,8 @@ other : test = 2
 other2 : test = 5
 
 u162 := u16
+
+// testtest := 2
 
 testFunc := :(a: test, b: u162) {
   str := string

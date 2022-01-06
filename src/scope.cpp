@@ -23,6 +23,7 @@ void scope_enter(ScopeStack *stack, Node *owner) {
     } else {
         scope = stack->scopes.data[stack->size];
     }
+    scope->declListHead = nullptr;
     scope->decls.init();
     scope->owner = owner;
     stack->size++;
@@ -34,6 +35,8 @@ Node *scope_bind(ScopeStack *stack, Node *decl) {
     if (Node **other = scope->decls.try_put(decl->decl.lval->name.ident, decl)) {
         return *other;
     } else {
+        if (scope->declListHead) decl->decl.info->nextDecl = scope->declListHead;
+        scope->declListHead = decl;
         return nullptr;
     }
 }

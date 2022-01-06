@@ -18,13 +18,13 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
     scope_enter(cmp->scopeStack, func);
     for (size_t i = 0; i < func->func.params.size; i++) {
         Node *param = func->func.params.get(i);
-        param->decl.file = cmp->currFile;
+        param->decl.info->file = cmp->currFile;
         if (Node *other = scope_bind(cmp->scopeStack, param)) {
             dx_err(at_node(cmp->currFile->finfo, param->decl.lval), "Duplicate parameter name\n");
-            dx_note(at_node(other->decl.file->finfo, other->decl.lval), "Previous parameter here\n");
+            dx_note(at_node(other->decl.info->file->finfo, other->decl.lval), "Previous parameter here\n");
             return kError;
         }
-        param->decl.isBound = true;
+        param->decl.info->isBound = true;
     }
     return kAccept;
 }
@@ -58,14 +58,13 @@ Node *decl_lookup(CompilationContext *cmp, LStringView &symbol) {
 
 Result scope_exit_check_unused(CompilationContext *cmp) {
     Scope *scope = scope_get(cmp->scopeStack);
-    for (size_t i = 0; i < scope->decls.capacity; i++) {
-        if (scope->decls.table[i].psl) {
-            Node *decl = scope->decls.table[i].val;
-            if (!decl->decl.isUsed) {
-                dx_err(at_node(cmp->currFile->finfo, decl->decl.lval), "Unused variable\n");
-                return kError;
-            }
+    Node *curr = scope->declListHead;
+    while (curr) {
+        if (!curr->decl.info->isUsed) {
+            dx_err(at_node(cmp->currFile->finfo, curr->decl.lval), "Unused variable\n");
+            return kError;
         }
+        curr = curr->decl.info->nextDecl;
     }
     scope_exit(cmp->scopeStack);
     return kAccept;
@@ -111,18 +110,18 @@ bool is_numeric_type(Type *type) {
 Type *resolve_expanded_decl_type(CompilationContext *cmp, Node *expansion) {
     assert(expansion->kind == NodeKind::kDecl);
     File *save = cmp->currFile;
-    cmp->currFile = expansion->decl.file;
+    cmp->currFile = expansion->decl.info->file;
     if (analyze_decl(cmp, expansion)) return nullptr;
     cmp->currFile = save;
-    return expansion->decl.resolvedTy;
+    return expansion->decl.info->resolvedTy;
 }
 
 Node *resolve_type_alias(CompilationContext *cmp, Node *typeAlias) {
     assert(typeAlias->kind == NodeKind::kDecl);
-    assert(typeAlias->decl.isDecl);
+    assert(typeAlias->decl.info->isDecl);
     if (Type *resolvedType = resolve_expanded_decl_type(cmp, typeAlias)) {
         if (resolvedType->kind != TypeKind::kType) {
-            dx_err(at_node(typeAlias->decl.file->finfo, typeAlias),
+            dx_err(at_node(typeAlias->decl.info->file->finfo, typeAlias),
                    "'%s' expected to be a type alias: Found static type of '%s'\n",
                    lstr_raw_str(typeAlias->decl.lval->name.ident), type_string(resolvedType));
             dx_note(at_node(cmp->currFile->finfo, cmp->currResolvingTypeAlias), "Type alias needed here\n");
@@ -130,8 +129,8 @@ Node *resolve_type_alias(CompilationContext *cmp, Node *typeAlias) {
         }
 
         // TODO: Also return when encountering a struct rval
-        if (typeAlias->decl.isExtern) return typeAlias;
-        typeAlias->decl.isUsed = true;
+        if (typeAlias->decl.info->isExtern) return typeAlias;
+        typeAlias->decl.info->isUsed = true;
 
         assert(typeAlias->decl.rval);
         assert(typeAlias->decl.rval->kind == NodeKind::kName);
@@ -176,7 +175,7 @@ Result simplify_type_alias(CompilationContext *cmp, Node *type) {
 Node *expand_name(CompilationContext *cmp, Node *nameRef) {
     assert(nameRef->kind == NodeKind::kName);
     if (Node *decl = decl_lookup(cmp, nameRef->name.ident)) {
-        decl->decl.isUsed = true;
+        decl->decl.info->isUsed = true;
         return decl;
     } else if (Node *import = import_lookup(cmp, nameRef->name.ident)) {
         return import;
@@ -368,14 +367,14 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
             if (expr->func.params.size) funcTy->funcTy.paramTys.init(expr->func.params.size);
             for (size_t i = 0; i < expr->func.params.size; i++) {
                 Node *param = expr->func.params.get(i);
-                param->decl.file = cmp->currFile;
+                param->decl.info->file = cmp->currFile;
                 if (!param->decl.staticTy) {
                     dx_err(at_node(cmp->currFile->finfo, param), "Function parameter must explicitly specify a type\n");
                     return nullptr;
                 }
                 if (simplify_type_alias(cmp, param->decl.staticTy)) return nullptr;
-                param->decl.resolvedTy = &param->decl.staticTy->type;
-                funcTy->funcTy.paramTys.add(param->decl.resolvedTy);
+                param->decl.info->resolvedTy = &param->decl.staticTy->type;
+                funcTy->funcTy.paramTys.add(param->decl.info->resolvedTy);
             }
             if (expr->func.staticRetTy) {
                 if (simplify_type_alias(cmp, expr->func.staticRetTy)) return nullptr;
@@ -401,19 +400,19 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
 
 Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
     assert(decl->kind == NodeKind::kDecl);
-    if (decl->decl.resolvedTy) return kAccept;
+    if (decl->decl.info->resolvedTy) return kAccept;
 
-    if (decl->decl.isResolving) {
+    if (decl->decl.info->isResolving) {
         dx_err(at_node(cmp->currFile->finfo, decl), "Detected circular type dependency\n");
         return kError;
     }
-    decl->decl.isResolving = true;
+    decl->decl.info->isResolving = true;
 
     bool hasRval = decl->decl.rval;
     if (hasRval) {
-        decl->decl.resolvedTy = resolve_type(cmp, decl->decl.rval);
-        if (!decl->decl.resolvedTy) return kError;
-        if (decl->decl.resolvedTy->kind == TypeKind::kNone) {
+        decl->decl.info->resolvedTy = resolve_type(cmp, decl->decl.rval);
+        if (!decl->decl.info->resolvedTy) return kError;
+        if (decl->decl.info->resolvedTy->kind == TypeKind::kNone) {
             dx_err(at_node(cmp->currFile->finfo, decl->decl.rval), "Cannot assign value of type 'none' to variable\n");
             return kError;
         }
@@ -422,17 +421,17 @@ Result resolve_decl_type(CompilationContext *cmp, Node *decl) {
         if (simplify_type_alias(cmp, decl->decl.staticTy)) return kError;
         Type *staticTy = &decl->decl.staticTy->type;
         if (hasRval) {
-            if (!is_type_equal(staticTy, decl->decl.resolvedTy)) {
+            if (!is_type_equal(staticTy, decl->decl.info->resolvedTy)) {
                 dx_err(at_node(cmp->currFile->finfo, decl),
                        "Mismatched declaration types: declared type is '%s', value type is '%s'\n",
-                       type_string(staticTy), type_string(decl->decl.resolvedTy));
+                       type_string(staticTy), type_string(decl->decl.info->resolvedTy));
                 return kError;
             }
         }
-        if (decl->decl.resolvedTy) {
-            // TODO: free the previous decl->decl.resolvedTy if it exists
+        if (decl->decl.info->resolvedTy) {
+            // TODO: free the previous decl->decl.info->resolvedTy if it exists
         }
-        decl->decl.resolvedTy = staticTy;
+        decl->decl.info->resolvedTy = staticTy;
     }
     return kAccept;
 }
@@ -506,7 +505,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
         }
         switch (stmt->kind) {
             case NodeKind::kDecl:
-                if (stmt->decl.isExtern) {
+                if (stmt->decl.info->isExtern) {
                     dx_err(at_node(cmp->currFile->finfo, stmt), "Local declaration cannot be marked as #extern\n");
                     return kError;
                 }
@@ -650,36 +649,37 @@ Result analyze_function_bodies(CompilationContext *cmp) {
 
 Result analyze_decl(CompilationContext *cmp, Node *decl) {
     assert(decl->kind == NodeKind::kDecl);
-    decl->decl.file = cmp->currFile;
+    decl->decl.info->file = cmp->currFile;
     if (resolve_decl_type(cmp, decl)) return kError;
 
-    if (decl->decl.isDecl) {
-        if (!decl->decl.isBound) {
+    if (decl->decl.info->isDecl) {
+        if (!decl->decl.info->isBound) {
             if (Node *otherDecl = decl_lookup(cmp, decl->decl.lval->name.ident)) {
-                dx_err(at_node(decl->decl.file->finfo, decl->decl.lval), "Redeclaration\n");
-                dx_note(at_node(otherDecl->decl.file->finfo, otherDecl->decl.lval), "First declaration here\n");
+                dx_err(at_node(decl->decl.info->file->finfo, decl->decl.lval), "Redeclaration\n");
+                dx_note(at_node(otherDecl->decl.info->file->finfo, otherDecl->decl.lval), "First declaration here\n");
                 return kError;
             }
             if (Node *import = import_lookup(cmp, decl->decl.lval->name.ident)) {
-                dx_err(at_node(decl->decl.file->finfo, decl->decl.lval),
+                dx_err(at_node(decl->decl.info->file->finfo, decl->decl.lval),
                        "Declaration cannot have the same name as a package alias\n");
-                dx_note(at_node(decl->decl.file->finfo, import), "Package alias found here\n");
+                dx_note(at_node(decl->decl.info->file->finfo, import), "Package alias found here\n");
                 return kError;
             }
             scope_bind(cmp->scopeStack, decl);
-            decl->decl.isBound = true;
+            decl->decl.info->isBound = true;
         }
     } else {
         assert(!decl->decl.staticTy);
         Type *lType = resolve_type(cmp, decl->decl.lval);
         if (lType->kind == TypeKind::kType) {
-            dx_err(at_node(decl->decl.file->finfo, decl->decl.lval), "Cannot reassign to a type alias\n");
+            dx_err(at_node(decl->decl.info->file->finfo, decl->decl.lval), "Cannot reassign to a type alias\n");
             return kError;
         }
         if (!lType) return kError;
-        if (!is_type_equal(lType, decl->decl.resolvedTy)) {
-            dx_err(at_node(decl->decl.file->finfo, decl), "Mismatched assignment types: left is '%s', right is '%s'\n",
-                   type_string(lType), type_string(decl->decl.resolvedTy));
+        if (!is_type_equal(lType, decl->decl.info->resolvedTy)) {
+            dx_err(at_node(decl->decl.info->file->finfo, decl),
+                   "Mismatched assignment types: left is '%s', right is '%s'\n", type_string(lType),
+                   type_string(decl->decl.info->resolvedTy));
             return kError;
         }
     }
@@ -690,12 +690,11 @@ Result analyze_decl(CompilationContext *cmp, Node *decl) {
 }  // namespace
 
 Result analyze_file(CompilationContext *cmp) {
-    for (size_t i = 0; i < cmp->currFile->package->globalDecls.capacity; i++) {
-        auto &entry = cmp->currFile->package->globalDecls.table[i];
-        if (entry.psl) {
-            cmp->currFile = entry.val->decl.file;
-            if (analyze_decl(cmp, entry.val)) return kError;
-        }
+    Node *curr = cmp->currFile->package->globalDeclListHead;
+    while (curr) {
+        cmp->currFile = curr->decl.info->file;
+        if (analyze_decl(cmp, curr)) return kError;
+        curr = curr->decl.info->nextDecl;
     }
     return kAccept;
 }

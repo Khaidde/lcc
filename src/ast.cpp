@@ -80,28 +80,28 @@ void r_print_ast(Node *node, size_t depth) {
             print_color(kAnsiColorGrey);
 
             print_color(kAnsiColorMagenta);
-            if (node->decl.isDecl) {
+            if (node->decl.info->isDecl) {
                 printf(" <declare");
-                if (node->decl.file) {
+                if (node->decl.info->file) {
                     printf(":");
-                    print_location(node->decl.file, node);
-                    printf(":%s", node->decl.file->finfo->path);
+                    print_location(node->decl.info->file, node);
+                    printf(":%s", node->decl.info->file->finfo->path);
                 }
                 printf(">");
             } else {
                 printf(" <assign>");
             }
 
-            if (node->decl.resolvedTy) {
+            if (node->decl.info->resolvedTy) {
                 print_color(kAnsiColorYellow);
-                printf(" '%s'", type_string(node->decl.resolvedTy));
+                printf(" '%s'", type_string(node->decl.info->resolvedTy));
             } else if (node->decl.staticTy) {
                 print_color(kAnsiColorRed);
                 printf(" '%s'", type_string(&node->decl.staticTy->type));
-            } else if (node->decl.isDecl) {
+            } else if (node->decl.info->isDecl) {
                 printf(" unknown");
             }
-            if (node->decl.isExtern) {
+            if (node->decl.info->isExtern) {
                 reset_print_color();
                 printf(" #extern");
             }
@@ -130,7 +130,7 @@ void r_print_ast(Node *node, size_t depth) {
             print_color(kAnsiColorBlue);
             printf(" '%.*s'", node->name.ident.len, node->name.ident.src);
             if (node->name.ref) {
-                File *refFile = node->name.ref->decl.file;
+                File *refFile = node->name.ref->decl.info->file;
                 print_color(kAnsiColorGrey);
                 printf(" <%s:", refFile->finfo->path);
                 print_location(refFile, node->name.ref);
@@ -249,5 +249,12 @@ const char *node_kind_string(NodeKind kind) {
 }
 
 void print_ast(Node *node) { r_print_ast(node, 0); }
+
+void print_decl_list(Node *decl) {
+    while (decl) {
+        print_ast(decl);
+        decl = decl->decl.info->nextDecl;
+    }
+}
 
 }  // namespace lcc

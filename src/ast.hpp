@@ -75,6 +75,22 @@ struct Node;
 struct ImportNode {
     LStringView alias;
     LStringView package;
+
+    Node *nextImport;
+};
+
+struct DeclInfo {
+    struct File *file;
+
+    Type *resolvedTy;
+
+    Node *nextDecl;
+
+    bool isDecl : 1;
+    bool isExtern : 1;
+    bool isResolving : 1;
+    bool isBound : 1;
+    bool isUsed : 1;
 };
 
 struct DeclNode {
@@ -82,15 +98,7 @@ struct DeclNode {
     Node *staticTy;
     Node *rval;
 
-    struct File *file;
-
-    Type *resolvedTy;
-
-    bool isDecl : 1;
-    bool isExtern : 1;
-    bool isResolving : 1;
-    bool isBound : 1;
-    bool isUsed : 1;
+    DeclInfo *info;
 };
 
 struct IntLitNode {
@@ -183,6 +191,8 @@ struct Node {
 const char *node_kind_string(NodeKind kind);
 
 void print_ast(Node *node);
+
+void print_decl_list(Node *decl);
 
 }  // namespace lcc
 
