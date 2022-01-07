@@ -1,6 +1,7 @@
 #ifndef LCC_TRANSLATE_HPP
 #define LCC_TRANSLATE_HPP
 
+#include "compilation.hpp"
 #include "list.hpp"
 
 namespace lcc {
@@ -76,21 +77,17 @@ struct IrInstr {
 
 struct BasicBlock {
     BlockId id;
+    // TODO: add phiNode as an argument
     LList<IrInstr *> instrs;
     LList<BasicBlock *> exits;
-};
-
-struct FunctionContext {
-    BasicBlock *entry;
 };
 
 struct IrContext {
     // TODO: store a list of global constants
     LList<BasicBlock *> basicBlocks{};
-    ValId valCnt{0};
 };
 
-void translate_function(struct Node *function);
+void translate_global_decl_list(struct Node *declListHead);
 
 /*
 add = :(a: u16, b: u16) -> string {

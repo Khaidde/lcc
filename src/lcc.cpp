@@ -206,6 +206,7 @@ CompilationContext preload(const char *preloadFilePath) {
     preloadFile->imports.init();
 
     cmp.preloadPkg = mem::malloc<Package>();
+    cmp.preloadPkg->globalDeclListHead = nullptr;
     cmp.preloadPkg->files.init(1);
     cmp.preloadPkg->files.add(preloadFile);
     cmp.preloadPkg->globalDecls.init();
@@ -259,7 +260,8 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     LList<ImportContext> importStack{};
 
     // TODO: handle better way of hardcoding path to standard lib files
-    const char *libDir = "./lib";
+    // const char *libDir = "./lib";
+    const char *libDir = "C:/Users/berkx/Desktop/lcc/lib";
     size_t libDirLen = 5;
     LString libDirBuf = lstr_create(libDir);
 
@@ -350,7 +352,8 @@ ErrCode compile(const char *path) {
     }
 
     // TODO: figure out a better way to hardcode the preload file
-    CompilationContext cmp = preload("./lib/preload.tc");
+    // CompilationContext cmp = preload("./lib/preload.tc");
+    CompilationContext cmp = preload("C:/Users/berkx/Desktop/lcc/lib/preload.tc");
     if (resolve_packages(cmp, path) == ErrCode::kFailure) return ErrCode::kFailure;
 
     LStringView root{".", 1};
@@ -363,6 +366,8 @@ ErrCode compile(const char *path) {
     if (analyze_file(&cmp)) return ErrCode::kFailure;
 
     print_decl_list((*cmp.packageMap.get(root))->globalDeclListHead);
+
+    translate_global_decl_list((*cmp.packageMap.get(root))->globalDeclListHead);
 
     return ErrCode::kSuccess;
 }

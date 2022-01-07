@@ -118,7 +118,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     align_node_start(decl, lval->startI);
     decl->decl.lval = lval;
 
-    debug("New Decl Info\n");
+    debug("New DeclInfo\n");
     decl->decl.info = mem::malloc<DeclInfo>();
     decl->decl.info->file = nullptr;
     decl->decl.info->resolvedTy = nullptr;
@@ -501,7 +501,13 @@ Node *parse_while(Lexer *l) {
     assert(check_peek(l, TokenType::kWhile));
     Node *whilestmt = create_node(l, NodeKind::kWhile);
     whilestmt->whilestmt.label.src = nullptr;
-    whilestmt->whilestmt.branchLevel = (size_t)-1;
+
+    debug("New WhileInfo\n");
+    whilestmt->whilestmt.info = mem::malloc<WhileInfo>();
+    whilestmt->whilestmt.info->branchLevel = (size_t)-1;
+    whilestmt->whilestmt.info->entry = nullptr;
+    whilestmt->whilestmt.info->exit = nullptr;
+
     lex_next(l);  // next while
 
     whilestmt->whilestmt.cond = parse_expr(l);
