@@ -155,6 +155,7 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
         if (lex_peek(&l)->type == TokenType::kEof) return ErrCode::kSuccess;
         if (lex_peek(&l)->type == TokenType::kErr) return ErrCode::kFailure;
         Node *global = parse_global(&l);
+        if (!global) return ErrCode::kFailure;
         if (global->kind == NodeKind::kImport) {
             if (Node **otherImport = file->imports.try_put(global->import.alias, global)) {
                 dx_err(at_node(l.finfo, global), "Duplicate package alias: %s\n", lstr_raw_str(global->import.alias));

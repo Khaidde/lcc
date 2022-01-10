@@ -170,6 +170,7 @@ struct RetNode {
 struct LoopBranchNode {
     LStringView label;
     bool isBreak;
+    Node *ref;
 };
 
 struct Node {

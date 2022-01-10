@@ -586,6 +586,7 @@ Node *parse_block(Lexer *l) {
             case TokenType::kCont: {
                 Node *loopbr = create_node(l, NodeKind::kLoopBr);
                 loopbr->loopbr.isBreak = check_peek(l, TokenType::kBreak);
+                loopbr->loopbr.ref = nullptr;
                 lex_next(l);  // next break or cont
                 if (has_errors(l)) return nullptr;
                 if (check_peek(l, TokenType::kIdent)) {

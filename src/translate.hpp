@@ -11,7 +11,7 @@ struct BasicBlock;
 using BlockId = size_t;
 using ValId = size_t;
 
-enum class IrInstrKind {
+enum class IrInstKind {
     kAssign,
     kCond,
     kGoto,
@@ -51,35 +51,37 @@ struct Operand {
     };
 };
 
-struct AssignIrInstr {
+struct AssignIrInst {
     ValId dest;
     Operand op;
 };
 
-struct BranchIrInstr {
+struct BranchIrInst {
     BasicBlock *block;
 };
 
-struct CondIrInstr {
+struct CondIrInst {
     ValId cond;
     BasicBlock *then;
     BasicBlock *alt;
 };
 
-struct IrInstr {
-    IrInstrKind kind;
+struct IrInst {
+    IrInstKind kind;
     union {
-        AssignIrInstr assign;
-        BranchIrInstr branch;
-        CondIrInstr cond;
+        AssignIrInst assign;
+        BranchIrInst branch;
+        CondIrInst cond;
     };
 };
 
 struct BasicBlock {
     BlockId id;
-    // TODO: add phiNode as an argument
-    LList<IrInstr *> instrs;
+    LList<IrInst *> insts;
     LList<BasicBlock *> exits;
+
+    // Metdata for ssa translation
+    // size_t semidom;
 };
 
 struct IrContext {

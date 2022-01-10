@@ -568,18 +568,14 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 for (size_t i = scope_depth(cmp->scopeStack);; i--) {
                     Scope *scope = cmp->scopeStack->scopes.get(i);
                     if (scope->owner->kind == NodeKind::kWhile) {
-                        if (stmt->loopbr.label.src) {
-                            if (scope->owner->whilestmt.label.src &&
-                                lstr_equal(scope->owner->whilestmt.label, stmt->loopbr.label)) {
-                                block->block.branchLevel = i;
-                                break;
-                            }
-                        } else {
+                        if (!stmt->loopbr.label.src ||
+                            (scope->owner->whilestmt.label.src &&
+                             lstr_equal(scope->owner->whilestmt.label, stmt->loopbr.label))) {
                             block->block.branchLevel = i;
+                            stmt->loopbr.ref = scope->owner;
                             break;
                         }
-                    }
-                    if (scope->owner->kind == NodeKind::kFunc) {
+                    } else if (scope->owner->kind == NodeKind::kFunc) {
                         if (stmt->loopbr.label.src) {
                             dx_err(at_node(cmp->currFile->finfo, stmt), "Could not find label '%s'\n",
                                    lstr_raw_str(stmt->loopbr.label));
