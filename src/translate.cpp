@@ -9,69 +9,134 @@ namespace lcc {
 
 namespace {
 
-void dom_link(LList<BasicBlock *> &ancestor, BasicBlock *parent, BasicBlock *child) {
-    ancestor.get(child->id) = parent;
-}
-
-BasicBlock *dom_eval(LList<size_t> &semidom, LList<BasicBlock *> &ancestor, BasicBlock *block) {
-    BasicBlock *curr = ancestor.get(block->id);
-    while (curr) {
-        if (semidom.get(block->id) > semidom.get(curr->id)) {
-            block = curr;
-        }
-        curr = ancestor.get(curr->id);
-    }
-    return block;
-}
-
 // Fast dominator algorithm by Lengauer and Tarjan
-// Uses the "simple" eval and link methods
-LList<BasicBlock *> generate_immediate_dominators(BasicBlock *entry, size_t numBlocks) {
+// Uses the "sophisticated" eval and link methods
+namespace dominator {
+
+struct DominatorForestContext {
+    size_t *ancestor;
+    size_t *label;
+    size_t *child;
+    size_t *size;
+};
+
+void link(size_t *semi, DominatorForestContext &dfctx, size_t to, size_t from) {
+    size_t curr = from;
+    while (semi[dfctx.label[from]] < semi[dfctx.label[dfctx.child[curr]]]) {
+        size_t ch = dfctx.child[curr];
+        if (dfctx.size[curr] + dfctx.size[dfctx.child[ch]] >= dfctx.size[ch] << 1) {
+            dfctx.ancestor[ch] = curr;
+            dfctx.child[curr] = dfctx.child[ch];
+        } else {
+            dfctx.size[ch] = dfctx.size[curr];
+            dfctx.ancestor[curr] = ch;
+            curr = ch;
+        }
+    }
+    dfctx.label[curr] = dfctx.label[from];
+    dfctx.size[to] += dfctx.size[from];
+    if (dfctx.size[to] < dfctx.size[from] << 1) {
+        size_t temp = curr;
+        curr = dfctx.child[to];
+        dfctx.child[to] = temp;
+    }
+    while (curr) {
+        dfctx.ancestor[curr] = to;
+        curr = dfctx.child[curr];
+    }
+}
+
+void compress(size_t *semi, DominatorForestContext &dfctx, size_t node) {
+    size_t ancest = dfctx.ancestor[node];
+    if (dfctx.ancestor[ancest]) {
+        compress(semi, dfctx, ancest);
+        if (semi[dfctx.label[ancest]] < semi[dfctx.label[node]]) {
+            dfctx.label[node] = dfctx.label[ancest];
+        }
+        dfctx.ancestor[node] = dfctx.ancestor[ancest];
+    }
+}
+
+size_t eval(size_t *semi, DominatorForestContext &dfctx, size_t node) {
+    if (dfctx.ancestor[node]) {
+        compress(semi, dfctx, node);
+        size_t ancest = dfctx.ancestor[node];
+        if (semi[dfctx.label[ancest]] >= semi[dfctx.label[node]]) {
+            return dfctx.label[node];
+        } else {
+            return dfctx.label[ancest];
+        }
+    }
+    return dfctx.label[node];
+}
+
+BasicBlock **generate_idoms(BasicBlock *entry, size_t numBlocks) {
     assert(entry && numBlocks > 0);
+    size_t numNodes = numBlocks + 1;
+
+    // Allocate memory for data structures
+    BasicBlock **idom = mem::c_malloc<BasicBlock *>(numBlocks);
+    idom[0] = nullptr;
+
+    size_t arenaSize = sizeof(BasicBlock *) * numNodes;
+    arenaSize += sizeof(size_t) * numNodes * 6;
+    arenaSize += sizeof(LList<size_t>) * numNodes * 2;
+    void *arena = mem::c_malloc<int8_t>(arenaSize);
+
+    BasicBlock **vertex = (BasicBlock **)arena;
+    arena = &vertex[numNodes];
+
+    size_t *semi = (size_t *)arena;
+    arena = &semi[numNodes];
+    size_t *parent = (size_t *)arena;
+    arena = &parent[numNodes];
+
+    DominatorForestContext dfctx;
+    dfctx.ancestor = (size_t *)arena;
+    arena = &dfctx.ancestor[numNodes];
+    dfctx.label = (size_t *)arena;
+    arena = &dfctx.label[numNodes];
+    dfctx.child = (size_t *)arena;
+    arena = &dfctx.child[numNodes];
+    dfctx.size = (size_t *)arena;
+    arena = &dfctx.size[numNodes];
+
+    LList<size_t> *pred = (LList<size_t> *)arena;
+    arena = &pred[numNodes];
+    LList<size_t> *bucket = (LList<size_t> *)arena;
+    arena = (void *)&bucket[numNodes];
 
     // Initialize data structures
-    // TODO: optimize space by manually allocating arrays instead of using LList
-    LList<size_t> semidom;
-    LList<BasicBlock *> ancestor, label, parent, vertex, idom;
-    LList<LList<BasicBlock *>> predecessor, bucket;
-    semidom.init(numBlocks);
-    ancestor.init(numBlocks);
-    label.init(numBlocks);
-    parent.init(numBlocks);
-    vertex.init(numBlocks + 1);
-    idom.init(numBlocks);
-    predecessor.init(numBlocks);
-    bucket.init(numBlocks);
-
-    label.size = numBlocks;
-    parent.size = numBlocks;
-    vertex.add(nullptr);
-    idom.add(nullptr);
-    idom.size = numBlocks;
-    for (size_t i = 0; i < numBlocks; i++) {
-        semidom.add(0);
-        ancestor.add(nullptr);
-        predecessor.add({});
-        bucket.add({});
+    for (size_t i = 0; i < numNodes; i++) {
+        semi[i] = 0;
+        dfctx.ancestor[i] = 0;
+        dfctx.child[i] = 0;
+        dfctx.size[i] = 1;
+        pred[i] = {};
+        bucket[i] = {};
     }
+    vertex[0] = nullptr;
+    dfctx.size[0] = 0;
 
     // Iterative DFS numbering
-    LList<BasicBlock *> stack{};
+    LList<BasicBlock *> stack = {};
     stack.add(entry);
     size_t semiCnt = 0;
     while (stack.size) {
         BasicBlock *top = stack.get(stack.size - 1);
         stack.size--;
-        if (!semidom.get(top->id)) {
-            semidom.get(top->id) = ++semiCnt;
-            vertex.add(top);
-            label.get(top->id) = top;
+        size_t tid = top->id + 1;
+        if (!semi[tid]) {
+            semi[tid] = ++semiCnt;
+            vertex[semiCnt] = top;
+            dfctx.label[tid] = tid;
             for (size_t i = 0; i < top->exits.size; i++) {
-                BasicBlock *pred = top->exits.get(i);
-                predecessor.get(pred->id).add(top);
-                if (!semidom.get(pred->id)) {
-                    parent.get(pred->id) = top;
-                    stack.add(pred);
+                BasicBlock *p = top->exits.get(i);
+                size_t pn = p->id + 1;
+                pred[pn].add(tid);
+                if (!semi[pn]) {
+                    parent[pn] = tid;
+                    stack.add(p);
                 }
             }
         }
@@ -79,52 +144,48 @@ LList<BasicBlock *> generate_immediate_dominators(BasicBlock *entry, size_t numB
 
     for (size_t i = numBlocks; i >= 2; i--) {
         // Compute semi-dominators
-        BasicBlock *curr = vertex.get(i);
-        for (size_t k = 0; k < predecessor.get(curr->id).size; k++) {
-            BasicBlock *eval = dom_eval(semidom, ancestor, predecessor.get(curr->id).get(k));
-            if (semidom.get(eval->id) < semidom.get(curr->id)) {
-                semidom.get(curr->id) = semidom.get(eval->id);
+        size_t currN = vertex[i]->id + 1;
+        for (size_t k = 0; k < pred[currN].size; k++) {
+            size_t en = eval(semi, dfctx, pred[currN].get(k));
+            if (semi[en] < semi[currN]) {
+                semi[currN] = semi[en];
             }
         }
-        bucket.get(vertex.get(semidom.get(curr->id))->id).add(curr);
-        BasicBlock *currParent = parent.get(curr->id);
-        dom_link(ancestor, currParent, curr);
+        bucket[vertex[semi[currN]]->id + 1].add(currN);
+        size_t parenN = parent[currN];
+        link(semi, dfctx, parenN, currN);
 
         // Implicitly define immediate dominator for each vertex
-        LList<BasicBlock *> &parentBucket = bucket.get(currParent->id);
+        LList<size_t> &parentBucket = bucket[parenN];
         for (size_t i = 0; i < parentBucket.size; i++) {
-            BasicBlock *eval = dom_eval(semidom, ancestor, parentBucket.get(i));
-            if (semidom.get(eval->id) < semidom.get(parentBucket.get(i)->id)) {
-                idom.get(parentBucket.get(i)->id) = eval;
+            size_t vn = parentBucket.get(i);
+            size_t en = eval(semi, dfctx, vn);
+            if (semi[en] < semi[vn]) {
+                idom[vn - 1] = vertex[semi[en]];
             } else {
-                idom.get(parentBucket.get(i)->id) = currParent;
+                idom[vn - 1] = vertex[semi[parenN]];
             }
         }
         parentBucket.size = 0;
     }
     // Explicitly define immediate dominators
     for (size_t i = 2; i <= numBlocks; i++) {
-        BasicBlock *curr = vertex.get(i);
-        if (idom.get(curr->id) != vertex.get(semidom.get(curr->id))) {
-            idom.get(curr->id) = idom.get(idom.get(curr->id)->id);
+        BasicBlock *curr = vertex[i];
+        if (idom[curr->id] != vertex[semi[curr->id + 1]]) {
+            idom[curr->id] = idom[idom[curr->id + 1]->id + 1];
         }
     }
 
     // Free data structures
-    mem::c_free(semidom.data);
-    mem::c_free(ancestor.data);
-    mem::c_free(label.data);
-    mem::c_free(parent.data);
-    mem::c_free(vertex.data);
-    for (size_t i = 0; i < predecessor.size; i++) {
-        mem::c_free(predecessor.get(i).data);
-        mem::c_free(bucket.get(i).data);
+    for (size_t i = 0; i < numBlocks; i++) {
+        mem::c_free(pred[i].data);
+        mem::c_free(bucket[i].data);
     }
-    mem::c_free(predecessor.data);
-    mem::c_free(bucket.data);
-
+    mem::c_free((void *)((int8_t *)arena - arenaSize));
     return idom;
 }
+
+}  // namespace dominator
 
 BasicBlock *create_block() {
     BasicBlock *block = mem::malloc<BasicBlock>();
@@ -254,9 +315,9 @@ void translate_global_decl_list(struct Node *declListHead) {
             if (declListHead->decl.rval->func.body->kind == NodeKind::kBlock) {
                 BlockId idCnt = 0;  // TODO: move this into some kind of context structure
                 irctx.basicBlocks.add(translate_function_body(idCnt, declListHead->decl.rval));
-                LList<BasicBlock *> idom = generate_immediate_dominators(irctx.basicBlocks.get(0), idCnt + 1);
-                for (size_t i = 1; i < idom.size; i++) {
-                    printf("%d-%d\n", i, idom.get(i)->id);
+                BasicBlock **idom = dominator::generate_idoms(irctx.basicBlocks.get(0), idCnt + 1);
+                for (size_t i = 1; i < idCnt + 1; i++) {
+                    if (idom[i]) printf("dom:%d-%d\n", i, idom[i]->id);
                 }
             }
         }
