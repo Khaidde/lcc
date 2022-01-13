@@ -9,9 +9,142 @@ namespace lcc {
 
 namespace {
 
-// Fast dominator algorithm by Lengauer and Tarjan
-// Uses the "sophisticated" eval and link methods
-namespace dominator {
+namespace ssa {
+
+struct TranslationContext {
+    BlockId blockCnt{0};
+};
+
+BasicBlock *create_block() {
+    BasicBlock *block = mem::malloc<BasicBlock>();
+    block->insts = {};
+    block->exits = {};
+    return block;
+}
+
+BasicBlock *create_block(TranslationContext &tctx) {
+    BasicBlock *block = create_block();
+    block->id = tctx.blockCnt++;
+    return block;
+}
+
+void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block);
+
+void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
+    for (;;) {
+        BasicBlock *then = create_block(tctx);
+        entry->exits.add(then);
+        translate_block(tctx, then, exit, ifstmt->ifstmt.then);
+
+        if (!ifstmt->ifstmt.alt) {
+            entry->exits.add(exit);
+            return;
+        }
+
+        if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
+            BasicBlock *alt = create_block(tctx);
+            entry->exits.add(alt);
+            translate_block(tctx, alt, exit, ifstmt->ifstmt.alt);
+            return;
+        }
+
+        assert(ifstmt->ifstmt.alt->kind == NodeKind::kIf);
+        ifstmt = ifstmt->ifstmt.alt;
+    }
+}
+
+void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
+    BasicBlock *cond = create_block(tctx);
+    entry->exits.add(cond);
+
+    // Goto targets for break and continue statements
+    whilestmt->whilestmt.info->entry = cond;
+    whilestmt->whilestmt.info->exit = exit;
+
+    BasicBlock *loop = create_block(tctx);
+    cond->exits.add(loop);
+    cond->exits.add(exit);
+    translate_block(tctx, loop, cond, whilestmt->whilestmt.loop);
+}
+
+void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block) {
+    assert(block->kind == NodeKind::kBlock);
+
+    BasicBlock *curr = entry;
+    for (size_t i = 0; i < block->block.stmts.size; i++) {
+        curr->insts.size++;
+        Node *stmt = block->block.stmts.get(i);
+        switch (stmt->kind) {
+            case NodeKind::kIf: {
+                if (i < block->block.stmts.size - 1) {
+                    BasicBlock *ifExit = create_block();
+                    translate_if(tctx, curr, ifExit, stmt);
+                    ifExit->id = tctx.blockCnt++;
+                    curr = ifExit;
+                } else {
+                    translate_if(tctx, curr, exit, stmt);
+                    return;
+                }
+                break;
+            }
+            case NodeKind::kWhile: {
+                if (i < block->block.stmts.size - 1) {
+                    BasicBlock *whileExit = create_block();
+                    translate_while(tctx, curr, whileExit, stmt);
+                    whileExit->id = tctx.blockCnt++;
+                    curr = whileExit;
+                    break;
+                } else {
+                    translate_while(tctx, curr, exit, stmt);
+                    return;
+                }
+            }
+            case NodeKind::kLoopBr: {
+                if (stmt->loopbr.isBreak) {
+                    curr->exits.add(stmt->loopbr.ref->whilestmt.info->exit);
+                } else {
+                    curr->exits.add(stmt->loopbr.ref->whilestmt.info->entry);
+                }
+                return;
+            }
+            default: break;
+        }
+    }
+    curr->exits.add(exit);
+}
+
+struct SparseSet {
+    void init(size_t capacity, size_t valLim) {
+        dense = mem::c_malloc<size_t>(capacity);
+        sparse = mem::c_malloc<size_t>(valLim);
+        size = 0;
+#ifndef NDEBUG
+        this->capacity = capacity;
+        this->valLim = valLim;
+#endif
+    }
+    void try_add(size_t val) {
+        assert(size < capacity);
+        assert(val < valLim);
+
+        if (contains(val)) return;
+        dense[size] = val;
+        sparse[val] = size++;
+    }
+    bool contains(size_t val) {
+        assert(val < valLim);
+        size_t s = sparse[val];
+        return s < size && dense[s] == val;
+    }
+
+    size_t *dense;
+    size_t *sparse;
+    size_t size;
+#ifndef NDEBUG
+    size_t capacity;  // size of dense list
+    size_t valLim;    // size of sparse list
+#endif
+};
 
 struct DominatorForestContext {
     size_t *ancestor;
@@ -70,22 +203,21 @@ size_t eval(size_t *semi, DominatorForestContext &dfctx, size_t node) {
     return dfctx.label[node];
 }
 
-BasicBlock **generate_idoms(BasicBlock *entry, size_t numBlocks) {
-    assert(entry && numBlocks > 0);
-    size_t numNodes = numBlocks + 1;
+void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
+    assert(entry && maxBlockId > 0);
+
+    // Fast dominator algorithm by Lengauer and Tarjan
+    // Uses the "sophisticated" eval and link methods
 
     // Allocate memory for data structures
-    BasicBlock **idom = mem::c_malloc<BasicBlock *>(numBlocks);
-    idom[0] = nullptr;
-
-    size_t arenaSize = sizeof(BasicBlock *) * numNodes;
-    arenaSize += sizeof(size_t) * numNodes * 6;
-    arenaSize += sizeof(LList<size_t>) * numNodes * 2;
+    size_t numNodes = maxBlockId + 2;
+    size_t arenaSize = sizeof(size_t) * numNodes * 8 + sizeof(LList<size_t>) * numNodes * 2;
     void *arena = mem::c_malloc<int8_t>(arenaSize);
 
-    BasicBlock **vertex = (BasicBlock **)arena;
+    size_t *idom = (size_t *)arena;
+    arena = &idom[numNodes];
+    size_t *vertex = (size_t *)arena;
     arena = &vertex[numNodes];
-
     size_t *semi = (size_t *)arena;
     arena = &semi[numNodes];
     size_t *parent = (size_t *)arena;
@@ -115,183 +247,105 @@ BasicBlock **generate_idoms(BasicBlock *entry, size_t numBlocks) {
         pred[i] = {};
         bucket[i] = {};
     }
-    vertex[0] = nullptr;
+    idom[0] = 0;
+    idom[entry->id + 1] = 0;
+    vertex[0] = 0;
+    dfctx.label[0] = 0;
     dfctx.size[0] = 0;
 
     // Iterative DFS numbering
     LList<BasicBlock *> stack = {};
     stack.add(entry);
-    size_t semiCnt = 0;
+    size_t cnt = 0;
     while (stack.size) {
         BasicBlock *top = stack.get(stack.size - 1);
         stack.size--;
-        size_t tid = top->id + 1;
-        if (!semi[tid]) {
-            semi[tid] = ++semiCnt;
-            vertex[semiCnt] = top;
-            dfctx.label[tid] = tid;
-            for (size_t i = 0; i < top->exits.size; i++) {
-                BasicBlock *p = top->exits.get(i);
-                size_t pn = p->id + 1;
-                pred[pn].add(tid);
-                if (!semi[pn]) {
-                    parent[pn] = tid;
-                    stack.add(p);
-                }
-            }
+        size_t tn = top->id + 1;
+        assert(tn < numNodes);
+        if (semi[tn]) continue;
+        semi[tn] = ++cnt;
+        assert(cnt < numNodes);
+        vertex[cnt] = dfctx.label[tn] = tn;
+        for (size_t i = 0; i < top->exits.size; i++) {
+            size_t pn = top->exits.get(i)->id + 1;
+            pred[pn].add(tn);
+            if (semi[pn]) continue;
+            parent[pn] = tn;
+            stack.add(top->exits.get(i));
         }
     }
-
-    for (size_t i = numBlocks; i >= 2; i--) {
+    for (size_t i = numNodes - 1; i >= 2; i--) {
         // Compute semi-dominators
-        size_t currN = vertex[i]->id + 1;
+        size_t currN = vertex[i];
         for (size_t k = 0; k < pred[currN].size; k++) {
-            size_t en = eval(semi, dfctx, pred[currN].get(k));
-            if (semi[en] < semi[currN]) {
-                semi[currN] = semi[en];
-            }
+            size_t sevaln = semi[eval(semi, dfctx, pred[currN].get(k))];
+            if (sevaln < semi[currN]) semi[currN] = sevaln;
         }
-        bucket[vertex[semi[currN]]->id + 1].add(currN);
-        size_t parenN = parent[currN];
-        link(semi, dfctx, parenN, currN);
+        bucket[vertex[semi[currN]]].add(currN);
+        link(semi, dfctx, parent[currN], currN);
 
         // Implicitly define immediate dominator for each vertex
-        LList<size_t> &parentBucket = bucket[parenN];
-        for (size_t i = 0; i < parentBucket.size; i++) {
-            size_t vn = parentBucket.get(i);
-            size_t en = eval(semi, dfctx, vn);
-            if (semi[en] < semi[vn]) {
-                idom[vn - 1] = vertex[semi[en]];
-            } else {
-                idom[vn - 1] = vertex[semi[parenN]];
-            }
+        LList<size_t> &parenBucket = bucket[parent[currN]];
+        for (size_t k = 0; k < parenBucket.size; k++) {
+            size_t vn = parenBucket.get(k);
+            size_t evaln = eval(semi, dfctx, vn);
+            idom[vn] = semi[evaln] < semi[vn] ? evaln : parent[currN];
         }
-        parentBucket.size = 0;
+        parenBucket.size = 0;
     }
     // Explicitly define immediate dominators
-    for (size_t i = 2; i <= numBlocks; i++) {
-        BasicBlock *curr = vertex[i];
-        if (idom[curr->id] != vertex[semi[curr->id + 1]]) {
-            idom[curr->id] = idom[idom[curr->id + 1]->id + 1];
+    for (size_t i = 2; i < numNodes; i++) {
+        size_t wn = vertex[i];
+        if (idom[wn] != vertex[semi[wn]]) idom[wn] = idom[idom[wn]];
+    }
+
+    SparseSet *domFronts = mem::c_malloc<SparseSet>(numNodes);
+    for (size_t i = 0; i < numNodes; i++) {
+        domFronts[i].init(numNodes, numNodes);
+    }
+
+    // Simple Dominance Frontier algorithm by Cooper et al.
+    for (size_t i = 1; i < numNodes; i++) {
+        size_t n = vertex[i];
+        if (pred[n].size <= 1) continue;
+        for (size_t p = 0; p < pred[n].size; p++) {
+            size_t runner = pred[n].get(p);
+            while (runner != idom[n]) {
+                domFronts[runner].try_add(n);
+                runner = idom[runner];
+            }
         }
+    }
+    for (size_t i = 0; i < numNodes; i++) {
+        printf("%2d:{", i);
+        for (size_t k = 0; k < domFronts[i].size; k++) {
+            printf("%2d", domFronts[i].dense[k]);
+            if (k < domFronts[i].size - 1) {
+                printf(",");
+            }
+        }
+        printf("}\n");
     }
 
     // Free data structures
-    for (size_t i = 0; i < numBlocks; i++) {
+    for (size_t i = 0; i < numNodes; i++) {
         mem::c_free(pred[i].data);
         mem::c_free(bucket[i].data);
     }
     mem::c_free((void *)((int8_t *)arena - arenaSize));
-    return idom;
 }
 
-}  // namespace dominator
-
-BasicBlock *create_block() {
-    BasicBlock *block = mem::malloc<BasicBlock>();
-    block->insts = {};
-    block->exits = {};
-    return block;
-}
-
-BasicBlock *create_block(BlockId &id) {
-    BasicBlock *block = create_block();
-    block->id = id++;
-    return block;
-}
-
-void translate_block(BlockId &idCnt, BasicBlock *entry, BasicBlock *exit, Node *block);
-
-void translate_if(BlockId &idCnt, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
-    for (;;) {
-        BasicBlock *then = create_block(idCnt);
-        entry->exits.add(then);
-        translate_block(idCnt, then, exit, ifstmt->ifstmt.then);
-
-        if (!ifstmt->ifstmt.alt) {
-            entry->exits.add(exit);
-            return;
-        }
-
-        if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
-            BasicBlock *alt = create_block(idCnt);
-            entry->exits.add(alt);
-            translate_block(idCnt, alt, exit, ifstmt->ifstmt.alt);
-            return;
-        }
-
-        assert(ifstmt->ifstmt.alt->kind == NodeKind::kIf);
-        ifstmt = ifstmt->ifstmt.alt;
-    }
-}
-
-void translate_while(BlockId &idCnt, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
-    BasicBlock *cond = create_block(idCnt);
-    entry->exits.add(cond);
-
-    // Goto targets for break and continue statements
-    whilestmt->whilestmt.info->entry = cond;
-    whilestmt->whilestmt.info->exit = exit;
-
-    BasicBlock *loop = create_block(idCnt);
-    cond->exits.add(loop);
-    cond->exits.add(exit);
-    translate_block(idCnt, loop, cond, whilestmt->whilestmt.loop);
-}
-
-void translate_block(BlockId &idCnt, BasicBlock *entry, BasicBlock *exit, Node *block) {
-    assert(block->kind == NodeKind::kBlock);
-
-    BasicBlock *curr = entry;
-    for (size_t i = 0; i < block->block.stmts.size; i++) {
-        curr->insts.size++;
-        Node *stmt = block->block.stmts.get(i);
-        switch (stmt->kind) {
-            case NodeKind::kIf: {
-                if (i < block->block.stmts.size - 1) {
-                    BasicBlock *ifExit = create_block();
-                    translate_if(idCnt, curr, ifExit, stmt);
-                    ifExit->id = idCnt++;
-                    curr = ifExit;
-                } else {
-                    translate_if(idCnt, curr, exit, stmt);
-                    return;
-                }
-                break;
-            }
-            case NodeKind::kWhile: {
-                if (i < block->block.stmts.size - 1) {
-                    BasicBlock *whileExit = create_block();
-                    translate_while(idCnt, curr, whileExit, stmt);
-                    whileExit->id = idCnt++;
-                    curr = whileExit;
-                    break;
-                } else {
-                    translate_while(idCnt, curr, exit, stmt);
-                    return;
-                }
-            }
-            case NodeKind::kLoopBr: {
-                if (stmt->loopbr.isBreak) {
-                    curr->exits.add(stmt->loopbr.ref->whilestmt.info->exit);
-                } else {
-                    curr->exits.add(stmt->loopbr.ref->whilestmt.info->entry);
-                }
-                return;
-            }
-            default: break;
-        }
-    }
-    curr->exits.add(exit);
-}
-
-BasicBlock *translate_function_body(BlockId &idCnt, Node *function) {
-    BasicBlock *entry = create_block(idCnt);
+BasicBlock *translate_function_body(Node *function) {
+    TranslationContext tctx{};
+    BasicBlock *entry = create_block(tctx);
     BasicBlock *exit = create_block();
-    translate_block(idCnt, entry, exit, function->func.body);
-    exit->id = idCnt;
+    translate_block(tctx, entry, exit, function->func.body);
+    exit->id = tctx.blockCnt++;
+    generate_dominance_frontier(entry, tctx.blockCnt);
     return entry;
 }
+
+}  // namespace ssa
 
 }  // namespace
 
@@ -313,16 +367,40 @@ void translate_global_decl_list(struct Node *declListHead) {
     while (declListHead) {
         if (declListHead->decl.info->resolvedTy->kind == TypeKind::kFuncTy) {
             if (declListHead->decl.rval->func.body->kind == NodeKind::kBlock) {
-                BlockId idCnt = 0;  // TODO: move this into some kind of context structure
-                irctx.basicBlocks.add(translate_function_body(idCnt, declListHead->decl.rval));
-                BasicBlock **idom = dominator::generate_idoms(irctx.basicBlocks.get(0), idCnt + 1);
-                for (size_t i = 1; i < idCnt + 1; i++) {
-                    if (idom[i]) printf("dom:%d-%d\n", i, idom[i]->id);
-                }
+                irctx.basicBlocks.add(ssa::translate_function_body(declListHead->decl.rval));
             }
         }
         declListHead = declListHead->decl.info->nextDecl;
     }
+
+    BasicBlock bt[14];
+    for (size_t i = 0; i < 14; i++) {
+        bt[i].id = i;
+        bt[i].exits = {};
+    }
+    bt[1].exits.add(&bt[2]);
+    bt[1].exits.add(&bt[5]);
+    bt[1].exits.add(&bt[9]);
+    bt[2].exits.add(&bt[3]);
+    bt[3].exits.add(&bt[3]);
+    bt[3].exits.add(&bt[4]);
+    bt[4].exits.add(&bt[13]);
+    bt[5].exits.add(&bt[6]);
+    bt[5].exits.add(&bt[7]);
+    bt[6].exits.add(&bt[4]);
+    bt[6].exits.add(&bt[8]);
+    bt[7].exits.add(&bt[8]);
+    bt[7].exits.add(&bt[12]);
+    bt[8].exits.add(&bt[5]);
+    bt[8].exits.add(&bt[13]);
+    bt[9].exits.add(&bt[10]);
+    bt[9].exits.add(&bt[11]);
+    bt[10].exits.add(&bt[12]);
+    bt[11].exits.add(&bt[12]);
+    bt[12].exits.add(&bt[13]);
+    ssa::generate_dominance_frontier(&bt[1], 14);
+    // BlockId bid = 0;
+    // print_block(bid, &bt[1]);
 
     for (size_t i = 0; i < irctx.basicBlocks.size; i++) {
         BlockId bid = 0;

@@ -79,9 +79,6 @@ struct BasicBlock {
     BlockId id;
     LList<IrInst *> insts;
     LList<BasicBlock *> exits;
-
-    // Metdata for ssa translation
-    // size_t semidom;
 };
 
 struct IrContext {
