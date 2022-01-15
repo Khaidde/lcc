@@ -9,9 +9,11 @@
 
 namespace lcc {
 
+struct DeclInfo;
+
 struct Scope {
-    Node *declListHead;
-    LMap<LStringView, Node *, lstr_hash, lstr_equal> decls;
+    DeclInfo *declListHead;
+    LMap<LStringView, DeclInfo *, lstr_hash, lstr_equal> decls;
 
     Node *owner;
 };
@@ -27,7 +29,7 @@ size_t scope_depth(ScopeStack *stack);
 
 void scope_enter(ScopeStack *stack, Node *owner);
 
-Node *scope_bind(ScopeStack *stack, Node *decl);
+DeclInfo *scope_bind(ScopeStack *stack, DeclInfo *declInfo);
 
 Scope *scope_get(ScopeStack *stack);
 

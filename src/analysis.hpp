@@ -5,7 +5,7 @@
 
 namespace lcc {
 
-Result analyze_file(CompilationContext *cmp);
+Result analyze_package(CompilationContext *cmp, Package *package);
 
 };  // namespace lcc
 

@@ -67,6 +67,20 @@ void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
     translate_block(tctx, loop, cond, whilestmt->whilestmt.loop);
 }
 
+/*
+void translate_expr(BasicBlock *curr, Node *expr) {
+assert(expr && curr);
+switch (expr->kind) {
+    case NodeKind::kIntLit: {
+        IrInst *inst = mem::malloc<IrInst>();
+        curr->insts.add(inst);
+        break;
+    }
+    default: assert(false && "TODO: no translation implemented for expression kind\n"); break;
+}
+}
+*/
+
 void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block) {
     assert(block->kind == NodeKind::kBlock);
 
@@ -75,6 +89,13 @@ void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
         curr->insts.size++;
         Node *stmt = block->block.stmts.get(i);
         switch (stmt->kind) {
+            case NodeKind::kDecl: {
+                if (stmt->decl.isDecl) {
+                    // translate_expr(curr, stmt->decl.rval);
+                } else {
+                }
+                break;
+            }
             case NodeKind::kIf: {
                 if (i < block->block.stmts.size - 1) {
                     BasicBlock *ifExit = create_block();
@@ -335,11 +356,11 @@ void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
     mem::c_free((void *)((int8_t *)arena - arenaSize));
 }
 
-BasicBlock *translate_function_body(Node *function) {
+BasicBlock *translate_function_body(Node *functionBody) {
     TranslationContext tctx{};
     BasicBlock *entry = create_block(tctx);
     BasicBlock *exit = create_block();
-    translate_block(tctx, entry, exit, function->func.body);
+    translate_block(tctx, entry, exit, functionBody);
     exit->id = tctx.blockCnt++;
     generate_dominance_frontier(entry, tctx.blockCnt);
     return entry;
@@ -361,51 +382,61 @@ void print_block(BlockId &bid, BasicBlock *basicBlock) {
     }
 }
 
-void translate_global_decl_list(struct Node *declListHead) {
-    IrContext irctx;
-    irctx.basicBlocks = {};
-    while (declListHead) {
-        if (declListHead->decl.info->resolvedTy->kind == TypeKind::kFuncTy) {
-            if (declListHead->decl.rval->func.body->kind == NodeKind::kBlock) {
-                irctx.basicBlocks.add(ssa::translate_function_body(declListHead->decl.rval));
-            }
+void translate_decl(Node *decl) {
+    if (decl->decl.rval->kind == NodeKind::kFunc) {
+        if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
+            ssa::translate_function_body(decl->decl.rval->func.body);
         }
-        declListHead = declListHead->decl.info->nextDecl;
-    }
-
-    BasicBlock bt[14];
-    for (size_t i = 0; i < 14; i++) {
-        bt[i].id = i;
-        bt[i].exits = {};
-    }
-    bt[1].exits.add(&bt[2]);
-    bt[1].exits.add(&bt[5]);
-    bt[1].exits.add(&bt[9]);
-    bt[2].exits.add(&bt[3]);
-    bt[3].exits.add(&bt[3]);
-    bt[3].exits.add(&bt[4]);
-    bt[4].exits.add(&bt[13]);
-    bt[5].exits.add(&bt[6]);
-    bt[5].exits.add(&bt[7]);
-    bt[6].exits.add(&bt[4]);
-    bt[6].exits.add(&bt[8]);
-    bt[7].exits.add(&bt[8]);
-    bt[7].exits.add(&bt[12]);
-    bt[8].exits.add(&bt[5]);
-    bt[8].exits.add(&bt[13]);
-    bt[9].exits.add(&bt[10]);
-    bt[9].exits.add(&bt[11]);
-    bt[10].exits.add(&bt[12]);
-    bt[11].exits.add(&bt[12]);
-    bt[12].exits.add(&bt[13]);
-    ssa::generate_dominance_frontier(&bt[1], 14);
-    // BlockId bid = 0;
-    // print_block(bid, &bt[1]);
-
-    for (size_t i = 0; i < irctx.basicBlocks.size; i++) {
-        BlockId bid = 0;
-        print_block(bid, irctx.basicBlocks.get(i));
     }
 }
+
+/*
+void translate_global_decl_list(struct Node *declListHead) {
+IrContext irctx;
+irctx.basicBlocks = {};
+while (declListHead) {
+    if (declListHead->decl.resolvedTy->kind == TypeKind::kFuncTy) {
+        if (declListHead->decl.rval->func.body->kind == NodeKind::kBlock) {
+            irctx.basicBlocks.add(ssa::translate_function_body(declListHead->decl.rval));
+        }
+    }
+    declListHead = declListHead->decl.info->nextDecl;
+}
+
+BasicBlock bt[14];
+for (size_t i = 0; i < 14; i++) {
+    bt[i].id = i;
+    bt[i].exits = {};
+}
+bt[1].exits.add(&bt[2]);
+bt[1].exits.add(&bt[5]);
+bt[1].exits.add(&bt[9]);
+bt[2].exits.add(&bt[3]);
+bt[3].exits.add(&bt[3]);
+bt[3].exits.add(&bt[4]);
+bt[4].exits.add(&bt[13]);
+bt[5].exits.add(&bt[6]);
+bt[5].exits.add(&bt[7]);
+bt[6].exits.add(&bt[4]);
+bt[6].exits.add(&bt[8]);
+bt[7].exits.add(&bt[8]);
+bt[7].exits.add(&bt[12]);
+bt[8].exits.add(&bt[5]);
+bt[8].exits.add(&bt[13]);
+bt[9].exits.add(&bt[10]);
+bt[9].exits.add(&bt[11]);
+bt[10].exits.add(&bt[12]);
+bt[11].exits.add(&bt[12]);
+bt[12].exits.add(&bt[13]);
+ssa::generate_dominance_frontier(&bt[1], 14);
+// BlockId bid = 0;
+// print_block(bid, &bt[1]);
+
+for (size_t i = 0; i < irctx.basicBlocks.size; i++) {
+    BlockId bid = 0;
+    print_block(bid, irctx.basicBlocks.get(i));
+}
+}
+*/
 
 }  // namespace lcc

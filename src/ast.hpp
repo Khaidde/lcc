@@ -80,26 +80,16 @@ struct ImportNode {
     Node *nextImport;
 };
 
-struct DeclInfo {
-    struct File *file;
-
-    Type *resolvedTy;
-
-    Node *nextDecl;
-
-    bool isDecl : 1;
-    bool isExtern : 1;
-    bool isResolving : 1;
-    bool isBound : 1;
-    bool isUsed : 1;
-};
-
 struct DeclNode {
     Node *lval;
     Node *staticTy;
     Node *rval;
 
-    DeclInfo *info;
+    Type *resolvedTy;
+
+    bool isDecl : 1;
+    bool isGlobal : 1;
+    bool isExtern : 1;
 };
 
 struct IntLitNode {

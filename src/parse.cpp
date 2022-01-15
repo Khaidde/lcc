@@ -53,6 +53,7 @@ Result parse_directive(Lexer *l, LStringView &directive) {
 
 Node *parse_import(Lexer *l) {
     Node *import = create_node(l, NodeKind::kImport);
+    import->import.nextImport = nullptr;
 
     bool hasAlias = true;
 
@@ -115,18 +116,11 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     }
 
     Node *decl = create_node(l, NodeKind::kDecl);
+    decl->decl.resolvedTy = nullptr;
+    decl->decl.isGlobal = false;
+    decl->decl.isExtern = false;
     align_node_start(decl, lval->startI);
     decl->decl.lval = lval;
-
-    debug("New DeclInfo\n");
-    decl->decl.info = mem::malloc<DeclInfo>();
-    decl->decl.info->file = nullptr;
-    decl->decl.info->resolvedTy = nullptr;
-    decl->decl.info->nextDecl = nullptr;
-    decl->decl.info->isExtern = false;
-    decl->decl.info->isResolving = false;
-    decl->decl.info->isBound = false;
-    decl->decl.info->isUsed = false;
 
     if (has_errors(l)) return nullptr;
     bool hasType = check_peek(l, TokenType::kColon);
@@ -136,7 +130,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
             return nullptr;
         }
 
-        decl->decl.info->isDecl = true;
+        decl->decl.isDecl = true;
         lex_next(l);  // next :
 
         if (check_peek(l, TokenType::kAssign)) {
@@ -146,7 +140,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
             if (!decl->decl.staticTy) return nullptr;
         }
     } else {
-        decl->decl.info->isDecl = false;
+        decl->decl.isDecl = false;
         decl->decl.staticTy = nullptr;
     }
 
@@ -161,7 +155,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
         if (check_peek(l, TokenType::kDirective)) {
             LStringView externDirective{"extern", 6};
             if (parse_directive(l, externDirective)) return nullptr;
-            decl->decl.info->isExtern = true;
+            decl->decl.isExtern = true;
         }
     }
     if (!hasType && !hasAssignment) {
@@ -641,13 +635,13 @@ Node *parse_global(Lexer *l) {
         return import;
     } else if (Node *declOrExpr = parse_decl_or_expr(l)) {
         if (declOrExpr->kind == NodeKind::kDecl) {
-            if (!declOrExpr->decl.info->isDecl) {
-                dx_err(at_node(declOrExpr->decl.info->file->finfo, declOrExpr),
-                       "Assignment cannot be in global scope\n");
+            declOrExpr->decl.isGlobal = true;
+            if (!declOrExpr->decl.isDecl) {
+                dx_err(at_node(l->finfo, declOrExpr), "Assignment cannot be in global scope\n");
                 return nullptr;
             }
-            if (!declOrExpr->decl.rval && !declOrExpr->decl.info->isExtern) {
-                dx_err(at_node(declOrExpr->decl.info->file->finfo, declOrExpr),
+            if (!declOrExpr->decl.rval && !declOrExpr->decl.isExtern) {
+                dx_err(at_node(l->finfo, declOrExpr),
                        "Global declaration must be defined with a value or marked as #extern\n");
                 return nullptr;
             }

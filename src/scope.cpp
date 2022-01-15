@@ -29,14 +29,13 @@ void scope_enter(ScopeStack *stack, Node *owner) {
     stack->size++;
 }
 
-Node *scope_bind(ScopeStack *stack, Node *decl) {
-    assert(decl->decl.lval->kind == NodeKind::kName && "LValue of decl should be a name");
+DeclInfo *scope_bind(ScopeStack *stack, DeclInfo *declInfo) {
     Scope *scope = scope_get(stack);
-    if (Node **other = scope->decls.try_put(decl->decl.lval->name.ident, decl)) {
+    if (DeclInfo **other = scope->decls.try_put(declInfo->declNode->decl.lval->name.ident, declInfo)) {
         return *other;
     } else {
-        if (scope->declListHead) decl->decl.info->nextDecl = scope->declListHead;
-        scope->declListHead = decl;
+        if (scope->declListHead) declInfo->nextDecl = scope->declListHead;
+        scope->declListHead = declInfo;
         return nullptr;
     }
 }

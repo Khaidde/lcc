@@ -166,26 +166,27 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
             if (file->importListHead) global->import.nextImport = file->importListHead;
             file->importListHead = global;
         } else if (global->kind == NodeKind::kDecl) {
-            global->decl.info->file = file;
+            DeclInfo *declInfo = mem::malloc<DeclInfo>();
+            declInfo->isResolving = false;
+            declInfo->nextDecl = nullptr;
+            declInfo->declNode = global;
+            declInfo->file = file;
 
             LStringView &declName = global->decl.lval->name.ident;
-            if (Node **preload = cmp.preloadPkg->globalDecls.get(declName)) {
-                Node *preloadDecl = *preload;
+            if (DeclInfo **preload = cmp.preloadPkg->globalDecls.get(declName)) {
                 dx_err(at_node(file->finfo, global->decl.lval), "Declaration cannot have the name '%s'\n",
-                       lstr_raw_str(preloadDecl->decl.lval->name.ident));
+                       lstr_raw_str((*preload)->declNode->decl.lval->name.ident));
                 return ErrCode::kFailure;
             }
-            if (Node **other = file->package->globalDecls.try_put(declName, global)) {
-                Node *otherDecl = *other;
+            if (DeclInfo **other = file->package->globalDecls.try_put(declName, declInfo)) {
+                DeclInfo *otherInfo = *other;
                 dx_err(at_node(file->finfo, global->decl.lval), "Duplicate declaration\n");
-                dx_note(at_node(otherDecl->decl.info->file->finfo, otherDecl->decl.lval),
-                        "Previous declaration here\n");
+                dx_note(at_node(otherInfo->file->finfo, otherInfo->declNode->decl.lval), "Previous declaration here\n");
                 return ErrCode::kFailure;
             }
-            global->decl.info->isBound = true;
 
-            if (file->package->globalDeclListHead) global->decl.info->nextDecl = file->package->globalDeclListHead;
-            file->package->globalDeclListHead = global;
+            if (file->package->globalDeclListHead) declInfo->nextDecl = file->package->globalDeclListHead;
+            file->package->globalDeclListHead = declInfo;
         }
     }
 }
@@ -204,7 +205,6 @@ CompilationContext preload(const char *preloadFilePath) {
     File *preloadFile = mem::malloc<File>();
     file::FileErrCode errCode = file::read_file(&preloadFile->finfo, preloadFilePath);
     if (errCode != file::FileErrCode::kSuccess) assert(false);
-    preloadFile->imports.init();
 
     cmp.preloadPkg = mem::malloc<Package>();
     cmp.preloadPkg->globalDeclListHead = nullptr;
@@ -220,7 +220,7 @@ CompilationContext preload(const char *preloadFilePath) {
     if (parseRes != ErrCode::kSuccess) assert(false);
 
     cmp.currFile = preloadFile;
-    if (analyze_file(&cmp) != kAccept) assert(false);
+    if (analyze_package(&cmp, cmp.preloadPkg) != kAccept) assert(false);
 
     builtin_type::none = mem::malloc<Type>();
     builtin_type::none->kind = TypeKind::kNone;
@@ -228,16 +228,16 @@ CompilationContext preload(const char *preloadFilePath) {
     builtin_type::u16 = mem::malloc<Type>();
     builtin_type::u16->kind = TypeKind::kNamed;
     builtin_type::u16->name.ident = {"u16", 3};
-    Node **u16Ref = cmp.preloadPkg->globalDecls.get(builtin_type::u16->name.ident);
+    DeclInfo **u16Ref = cmp.preloadPkg->globalDecls.get(builtin_type::u16->name.ident);
     assert(u16Ref);
-    builtin_type::u16->name.ref = *u16Ref;
+    builtin_type::u16->name.ref = (*u16Ref)->declNode;
 
     builtin_type::string = mem::malloc<Type>();
     builtin_type::string->kind = TypeKind::kNamed;
     builtin_type::string->name.ident = {"string", 6};
-    Node **stringRef = cmp.preloadPkg->globalDecls.get(builtin_type::string->name.ident);
+    DeclInfo **stringRef = cmp.preloadPkg->globalDecls.get(builtin_type::string->name.ident);
     assert(stringRef);
-    builtin_type::string->name.ref = *stringRef;
+    builtin_type::string->name.ref = (*stringRef)->declNode;
 
     return cmp;
 }
@@ -263,7 +263,7 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     // TODO: handle better way of hardcoding path to standard lib files
     // const char *libDir = "./lib";
     const char *libDir = "C:/Users/berkx/Desktop/lcc/lib";
-    size_t libDirLen = 5;
+    size_t libDirLen = 30;
     LString libDirBuf = lstr_create(libDir);
 
     LStringView rootDir = file::split_dir(mainFile);
@@ -313,10 +313,10 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
                 Node *curr = file->importListHead;
                 while (curr) {
                     if (!cmp.packageMap.get(curr->import.package)) importStack.add({file, curr->import.package});
-                    if (Node **decl = pkg->globalDecls.get(curr->import.alias)) {
+                    if (DeclInfo **declInfo = pkg->globalDecls.get(curr->import.alias)) {
                         dx_err(at_node(file->finfo, curr),
                                "Package alias cannot have the same name as a declaration\n");
-                        dx_note(at_node((*decl)->decl.info->file->finfo, *decl), "Declaration found here\n");
+                        dx_note(at_node((*declInfo)->file->finfo, (*declInfo)->declNode), "Declaration found here\n");
                         return ErrCode::kFailure;
                     }
                     curr = curr->import.nextImport;
@@ -364,11 +364,15 @@ ErrCode compile(const char *path) {
 
     // Semantic analysis of the file
     cmp.currFile = file;
-    if (analyze_file(&cmp)) return ErrCode::kFailure;
+    if (analyze_package(&cmp, pkg)) return ErrCode::kFailure;
 
-    print_decl_list((*cmp.packageMap.get(root))->globalDeclListHead);
+    DeclInfo *curr = (*cmp.packageMap.get(root))->globalDeclListHead;
+    while (curr) {
+        print_ast(curr->declNode);
+        curr = curr->nextDecl;
+    }
 
-    translate_global_decl_list((*cmp.packageMap.get(root))->globalDeclListHead);
+    // translate_decl((*cmp.packageMap.get(root))->globalDeclListHead->declNode);
 
     return ErrCode::kSuccess;
 }

@@ -20,8 +20,8 @@ testFunc := :(a: test, b: u162) {
 }
 
 otherFunc := :() {
-  val : u162
-  testFunc(val, 5)
+  // val : u162
+  // testFunc(val, 5)
 }
 
 /*

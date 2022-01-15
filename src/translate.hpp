@@ -12,12 +12,15 @@ using BlockId = size_t;
 using ValId = size_t;
 
 enum class IrInstKind {
-    kAssign,
-    kCond,
+    kConst,
+    kBin,
+    kCall,
     kGoto,
+    kCond,
 };
 
-struct ConstOperand {
+struct ConstIrInst {
+    ValId dest;
     // TODO: implement structure for constant data
 };
 
@@ -25,35 +28,23 @@ enum class BinKind {
     kAdd,
 };
 
-struct BinOperand {
+struct DestId {
+    union {
+        ValId dest;
+    };
+};
+
+struct BinIrInst {
+    ValId dest;
     ValId left;
     BinKind kind;
     ValId right;
 };
 
-struct CallOperand {
+struct CallIrInst {
+    ValId dest;
     // TODO: should also contain name of call
     ValId *args;
-};
-
-enum class OperandKind {
-    kConst,
-    kBin,
-    kCall,
-};
-
-struct Operand {
-    OperandKind kind;
-    union {
-        ConstOperand constOp;
-        BinOperand binOp;
-        CallOperand callOp;
-    };
-};
-
-struct AssignIrInst {
-    ValId dest;
-    Operand op;
 };
 
 struct BranchIrInst {
@@ -69,7 +60,9 @@ struct CondIrInst {
 struct IrInst {
     IrInstKind kind;
     union {
-        AssignIrInst assign;
+        ConstIrInst aconst;
+        BinIrInst abin;
+        CallIrInst acall;
         BranchIrInst branch;
         CondIrInst cond;
     };
@@ -86,7 +79,7 @@ struct IrContext {
     LList<BasicBlock *> basicBlocks{};
 };
 
-void translate_global_decl_list(struct Node *declListHead);
+void translate_decl(Node *decl);
 
 /*
 add = :(a: u16, b: u16) -> string {

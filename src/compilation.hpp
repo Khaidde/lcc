@@ -9,6 +9,9 @@
 
 namespace lcc {
 
+struct Node;
+struct Type;
+
 enum Result {
     kAccept = 0,
     kError = 1,
@@ -19,8 +22,6 @@ struct FileInfo {
     LString src;
 };
 
-struct Node;
-
 struct File {
     struct Package *package;
     FileInfo *finfo;
@@ -29,14 +30,21 @@ struct File {
     LMap<LStringView, Node *, lstr_hash, lstr_equal> imports;
 };
 
+struct DeclInfo {
+    bool isResolving : 1;
+    bool isUsed : 1;
+
+    DeclInfo *nextDecl;
+    Node *declNode;
+    File *file;
+};
+
 struct Package {
-    Node *globalDeclListHead;
-    LMap<LStringView, Node *, lstr_hash, lstr_equal> globalDecls;
+    DeclInfo *globalDeclListHead;
+    LMap<LStringView, DeclInfo *, lstr_hash, lstr_equal> globalDecls;
 
     LList<File *> files;
 };
-
-struct Type;
 
 struct CompilationContext {
     Package *preloadPkg;
