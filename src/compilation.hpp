@@ -40,7 +40,7 @@ struct DeclInfo {
 };
 
 struct Package {
-    DeclInfo *globalDeclListHead;
+    LList<DeclInfo *> globalDeclList;  // For efficient iteration of all globalDecls
     LMap<LStringView, DeclInfo *, lstr_hash, lstr_equal> globalDecls;
 
     LList<File *> files;

@@ -21,6 +21,7 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
         Node *param = func->func.params.get(i);
         DeclInfo *paramInfo = mem::malloc<DeclInfo>();
         paramInfo->isResolving = false;
+        paramInfo->nextDecl = nullptr;
         paramInfo->declNode = param;
         paramInfo->file = cmp->currFile;
         if (DeclInfo *other = scope_bind(cmp->scopeStack, paramInfo)) {
@@ -64,9 +65,10 @@ Result scope_exit_check_unused(CompilationContext *cmp) {
     DeclInfo *curr = scope->declListHead;
     while (curr) {
         if (!curr->isUsed) {
-            dx_err(at_node(cmp->currFile->finfo, curr->declNode->decl.lval), "Unused variable\n");
+            dx_err(at_node(curr->file->finfo, curr->declNode->decl.lval), "Unused variable\n");
             return kError;
         }
+        // TODO: free declInfo since it is no longer needed
         curr = curr->nextDecl;
     }
     scope_exit(cmp->scopeStack);
@@ -527,6 +529,9 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 } else {
                     assert(!stmt->decl.staticTy);
                     Type *lType = resolve_type(cmp, stmt->decl.lval);
+                    if (stmt->decl.lval->kind == NodeKind::kName && stmt->decl.lval->name.ref->decl.isGlobal) {
+                        stmt->decl.isAssignToGlobal = true;
+                    }
                     if (!lType) return kError;
                     if (lType->kind == TypeKind::kType) {
                         dx_err(at_node(cmp->currFile->finfo, stmt->decl.lval), "Cannot reassign to a type alias\n");
@@ -541,6 +546,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                         return kError;
                     }
                 }
+                if (analyze_function_bodies(cmp)) return kError;
                 break;
             case NodeKind::kBlock:
                 scope_enter(cmp->scopeStack, stmt);
@@ -687,11 +693,10 @@ Result analyze_global_decl(CompilationContext *cmp, DeclInfo *declInfo) {
 }  // namespace
 
 Result analyze_package(CompilationContext *cmp, Package *package) {
-    DeclInfo *curr = package->globalDeclListHead;
-    while (curr) {
-        if (analyze_global_decl(cmp, curr)) return kError;
-        curr = curr->nextDecl;
+    for (size_t i = 0; i < package->globalDeclList.size; i++) {
+        if (analyze_global_decl(cmp, package->globalDeclList.get(i))) return kError;
     }
     return kAccept;
 }
+
 };  // namespace lcc

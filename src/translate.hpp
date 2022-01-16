@@ -3,6 +3,7 @@
 
 #include "compilation.hpp"
 #include "list.hpp"
+#include "token.hpp"
 
 namespace lcc {
 
@@ -12,6 +13,7 @@ using BlockId = size_t;
 using ValId = size_t;
 
 enum class IrInstKind {
+    kPhi,
     kConst,
     kBin,
     kCall,
@@ -19,25 +21,20 @@ enum class IrInstKind {
     kCond,
 };
 
+struct PhiIrInst {
+    ValId dest;
+    LList<ValId> in;
+};
+
 struct ConstIrInst {
     ValId dest;
-    // TODO: implement structure for constant data
-};
-
-enum class BinKind {
-    kAdd,
-};
-
-struct DestId {
-    union {
-        ValId dest;
-    };
+    uint16_t intVal;
 };
 
 struct BinIrInst {
     ValId dest;
+    TokenType op;
     ValId left;
-    BinKind kind;
     ValId right;
 };
 
@@ -60,9 +57,10 @@ struct CondIrInst {
 struct IrInst {
     IrInstKind kind;
     union {
+        PhiIrInst phi;
         ConstIrInst aconst;
-        BinIrInst abin;
-        CallIrInst acall;
+        BinIrInst bin;
+        CallIrInst call;
         BranchIrInst branch;
         CondIrInst cond;
     };
@@ -79,7 +77,7 @@ struct IrContext {
     LList<BasicBlock *> basicBlocks{};
 };
 
-void translate_decl(Node *decl);
+void translate_package(Package *package);
 
 /*
 add = :(a: u16, b: u16) -> string {

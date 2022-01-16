@@ -10,8 +10,6 @@ other2 : test = 5
 
 u162 := u16
 
-// testtest := 2
-
 testFunc := :(a: test, b: u162) {
   str := string
   val : str = "test"
@@ -20,8 +18,8 @@ testFunc := :(a: test, b: u162) {
 }
 
 otherFunc := :() {
-  // val : u162
-  // testFunc(val, 5)
+  val : u162
+  testFunc(val, 5)
 }
 
 /*

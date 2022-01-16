@@ -88,7 +88,10 @@ struct DeclNode {
     Type *resolvedTy;
 
     bool isDecl : 1;
-    bool isGlobal : 1;
+    union {
+        bool isGlobal : 1;
+        bool isAssignToGlobal : 1;
+    };
     bool isExtern : 1;
 };
 

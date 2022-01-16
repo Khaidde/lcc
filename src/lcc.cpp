@@ -184,9 +184,7 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
                 dx_note(at_node(otherInfo->file->finfo, otherInfo->declNode->decl.lval), "Previous declaration here\n");
                 return ErrCode::kFailure;
             }
-
-            if (file->package->globalDeclListHead) declInfo->nextDecl = file->package->globalDeclListHead;
-            file->package->globalDeclListHead = declInfo;
+            file->package->globalDeclList.add(declInfo);
         }
     }
 }
@@ -207,7 +205,7 @@ CompilationContext preload(const char *preloadFilePath) {
     if (errCode != file::FileErrCode::kSuccess) assert(false);
 
     cmp.preloadPkg = mem::malloc<Package>();
-    cmp.preloadPkg->globalDeclListHead = nullptr;
+    cmp.preloadPkg->globalDeclList = {};
     cmp.preloadPkg->files.init(1);
     cmp.preloadPkg->files.add(preloadFile);
     cmp.preloadPkg->globalDecls.init();
@@ -296,7 +294,7 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
 
             // Find all files in the package
             Package *pkg = mem::malloc<Package>();
-            pkg->globalDeclListHead = nullptr;
+            pkg->globalDeclList = {};
             pkg->files = {};
             pkg->globalDecls.init();
             cmp.packageMap.try_put(importCtx.importName, pkg);
@@ -366,13 +364,12 @@ ErrCode compile(const char *path) {
     cmp.currFile = file;
     if (analyze_package(&cmp, pkg)) return ErrCode::kFailure;
 
-    DeclInfo *curr = (*cmp.packageMap.get(root))->globalDeclListHead;
-    while (curr) {
-        print_ast(curr->declNode);
-        curr = curr->nextDecl;
+    LList<DeclInfo *> &globalDecls = (*cmp.packageMap.get(root))->globalDeclList;
+    for (size_t i = 0; i < globalDecls.size; i++) {
+        print_ast(globalDecls.get(i)->declNode);
     }
 
-    // translate_decl((*cmp.packageMap.get(root))->globalDeclListHead->declNode);
+    translate_package((*cmp.packageMap.get(root)));
 
     return ErrCode::kSuccess;
 }

@@ -11,8 +11,24 @@ namespace {
 
 namespace ssa {
 
+struct AssignInfo {
+    IrInst *inst;
+};
+
+/*
+uint32_t val_hash(ValId &val) { return val; }
+
+bool val_equal(ValId &a, ValId &b) { return a == b; }
+*/
+
 struct TranslationContext {
     BlockId blockCnt{0};
+    ValId valCnt{0};
+
+    // LMap<ValId, AssignInfo, val_hash, val_equal> assigns;
+    // LMap<LStringView, ValId, lstr_hash, lstr_equal> varnameId;
+
+    LMap<LStringView, LList<BlockId> *, lstr_hash, lstr_equal> defBlocks;
 };
 
 BasicBlock *create_block() {
@@ -67,16 +83,31 @@ void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
     translate_block(tctx, loop, cond, whilestmt->whilestmt.loop);
 }
 
+IrInst *create_inst(IrInstKind kind) {
+    IrInst *inst = mem::malloc<IrInst>();
+    inst->kind = kind;
+    return inst;
+}
+
 /*
-void translate_expr(BasicBlock *curr, Node *expr) {
-assert(expr && curr);
+ValId translate_expr(TranslationContext &tctx, BasicBlock *curr, Node *expr) {
 switch (expr->kind) {
-    case NodeKind::kIntLit: {
-        IrInst *inst = mem::malloc<IrInst>();
-        curr->insts.add(inst);
-        break;
-    }
-    default: assert(false && "TODO: no translation implemented for expression kind\n"); break;
+case NodeKind::kIntLit: {
+    IrInst *constInst = create_inst(IrInstKind::kConst);
+    constInst->aconst.intVal = expr->intLit.intVal;
+    curr->insts.add(constInst);
+    return constInst->aconst.dest = tctx.valCnt++;
+}
+case NodeKind::kName: return *tctx.varnameId.get(expr->name.ident);
+case NodeKind::kInfix: {
+    IrInst *binInst = create_inst(IrInstKind::kBin);
+    binInst->abin.op = expr->infix.op;
+    binInst->abin.left = translate_expr(tctx, curr, expr->infix.left);
+    binInst->abin.right = translate_expr(tctx, curr, expr->infix.right);
+    curr->insts.add(binInst);
+    return binInst->abin.dest = tctx.valCnt++;
+}
+default: assert(false && "TODO: no translation implemented for expression kind\n"); return 0;
 }
 }
 */
@@ -86,13 +117,27 @@ void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
 
     BasicBlock *curr = entry;
     for (size_t i = 0; i < block->block.stmts.size; i++) {
-        curr->insts.size++;
         Node *stmt = block->block.stmts.get(i);
         switch (stmt->kind) {
             case NodeKind::kDecl: {
-                if (stmt->decl.isDecl) {
-                    // translate_expr(curr, stmt->decl.rval);
-                } else {
+                if (stmt->decl.lval->kind == NodeKind::kName) {
+                    if (!stmt->decl.isDecl && stmt->decl.isAssignToGlobal) {
+                        todo("Assignment to global '%s'\n", lstr_raw_str(stmt->decl.lval->name.ident));
+                        assert(false);
+                    }
+
+                    LList<BlockId> *blockList;
+                    if (LList<BlockId> **ptrBlockDefs = tctx.defBlocks.get(stmt->decl.lval->name.ident)) {
+                        blockList = *ptrBlockDefs;
+                    } else {
+                        blockList = mem::malloc<LList<BlockId>>();
+                        *blockList = {};
+                        tctx.defBlocks.try_put(stmt->decl.lval->name.ident, blockList);
+                    }
+                    // Ensure no duplicates before addition
+                    if (!blockList->size || blockList->last() != curr->id) {
+                        blockList->add(curr->id);
+                    }
                 }
                 break;
             }
@@ -144,6 +189,7 @@ struct SparseSet {
         this->valLim = valLim;
 #endif
     }
+    void clear() { size = 0; }
     void try_add(size_t val) {
         assert(size < capacity);
         assert(val < valLim);
@@ -151,6 +197,10 @@ struct SparseSet {
         if (contains(val)) return;
         dense[size] = val;
         sparse[val] = size++;
+    }
+    size_t pop() {
+        assert(size > 0);
+        return dense[--size];
     }
     bool contains(size_t val) {
         assert(val < valLim);
@@ -224,16 +274,21 @@ size_t eval(size_t *semi, DominatorForestContext &dfctx, size_t node) {
     return dfctx.label[node];
 }
 
-void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
-    assert(entry && maxBlockId > 0);
+void insert_phi_nodes(TranslationContext &tctx, BasicBlock *entry) {
+    assert(entry && tctx.blockCnt > 0);
 
     // Fast dominator algorithm by Lengauer and Tarjan
     // Uses the "sophisticated" eval and link methods
 
     // Allocate memory for data structures
-    size_t numNodes = maxBlockId + 2;
-    size_t arenaSize = sizeof(size_t) * numNodes * 8 + sizeof(LList<size_t>) * numNodes * 2;
+    size_t numNodes = tctx.blockCnt + 1;
+    size_t arenaSize = sizeof(BasicBlock *) * numNodes;
+    arenaSize += sizeof(size_t) * numNodes * 8;
+    arenaSize += sizeof(LList<size_t>) * numNodes * 2;
     void *arena = mem::c_malloc<int8_t>(arenaSize);
+
+    BasicBlock **blocks = (BasicBlock **)arena;
+    arena = &blocks[numNodes];
 
     size_t *idom = (size_t *)arena;
     arena = &idom[numNodes];
@@ -268,6 +323,7 @@ void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
         pred[i] = {};
         bucket[i] = {};
     }
+    blocks[0] = nullptr;
     idom[0] = 0;
     idom[entry->id + 1] = 0;
     vertex[0] = 0;
@@ -286,6 +342,7 @@ void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
         if (semi[tn]) continue;
         semi[tn] = ++cnt;
         assert(cnt < numNodes);
+        blocks[tn] = top;
         vertex[cnt] = dfctx.label[tn] = tn;
         for (size_t i = 0; i < top->exits.size; i++) {
             size_t pn = top->exits.get(i)->id + 1;
@@ -320,12 +377,11 @@ void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
         if (idom[wn] != vertex[semi[wn]]) idom[wn] = idom[idom[wn]];
     }
 
+    // Simple Dominance Frontier algorithm by Cooper et al.
     SparseSet *domFronts = mem::c_malloc<SparseSet>(numNodes);
     for (size_t i = 0; i < numNodes; i++) {
         domFronts[i].init(numNodes, numNodes);
     }
-
-    // Simple Dominance Frontier algorithm by Cooper et al.
     for (size_t i = 1; i < numNodes; i++) {
         size_t n = vertex[i];
         if (pred[n].size <= 1) continue;
@@ -337,15 +393,38 @@ void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
             }
         }
     }
-    for (size_t i = 0; i < numNodes; i++) {
-        printf("%2d:{", i);
-        for (size_t k = 0; k < domFronts[i].size; k++) {
-            printf("%2d", domFronts[i].dense[k]);
-            if (k < domFronts[i].size - 1) {
-                printf(",");
+
+    // Iterated dominance-frontier and phi node insertion
+    SparseSet philist;
+    philist.init(numNodes, numNodes);
+    SparseSet worklist;
+    worklist.init(numNodes, numNodes);
+    for (size_t i = 0; i < tctx.defBlocks.capacity; i++) {
+        // TODO: more efficient iteration of variable name deflists
+        if (tctx.defBlocks.table[i].psl) {
+            worklist.clear();
+            philist.clear();
+            LList<BlockId> *deflist = tctx.defBlocks.table[i].val;
+            for (size_t k = 0; k < deflist->size; k++) {
+                worklist.try_add(deflist->get(k) + 1);
+            }
+            while (worklist.size) {
+                size_t def = worklist.pop();
+                for (size_t k = 0; k < domFronts[def].size; k++) {
+                    size_t dfy = domFronts[def].dense[k];
+                    if (!philist.contains(dfy)) {
+                        IrInst *phi = create_inst(IrInstKind::kPhi);
+                        phi->phi.dest = tctx.valCnt++;
+                        phi->phi.in.init(pred[dfy].size);
+                        blocks[dfy]->insts.add(phi);
+                        philist.try_add(dfy);
+                        // TODO: optimization where a node shouldn't be added if the variable
+                        // is already defined there
+                        if (dfy != def) worklist.try_add(dfy);
+                    }
+                }
             }
         }
-        printf("}\n");
     }
 
     // Free data structures
@@ -358,85 +437,77 @@ void generate_dominance_frontier(BasicBlock *entry, size_t maxBlockId) {
 
 BasicBlock *translate_function_body(Node *functionBody) {
     TranslationContext tctx{};
+    tctx.defBlocks.init();
+
     BasicBlock *entry = create_block(tctx);
     BasicBlock *exit = create_block();
     translate_block(tctx, entry, exit, functionBody);
     exit->id = tctx.blockCnt++;
-    generate_dominance_frontier(entry, tctx.blockCnt);
+    insert_phi_nodes(tctx, entry);
+
+    mem::c_free(tctx.defBlocks.table);
     return entry;
 }
 
 }  // namespace ssa
 
-}  // namespace
-
-void print_block(BlockId &bid, BasicBlock *basicBlock) {
-    printf("b%d(%d)\n", basicBlock->id, basicBlock->insts.size);
+void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
+    printf("b%d\n", basicBlock->id, basicBlock->insts.size);
+    for (size_t i = 0; i < basicBlock->insts.size; i++) {
+        IrInst *inst = basicBlock->insts.get(i);
+        switch (inst->kind) {
+            case IrInstKind::kPhi:
+                printf("  v%d = phi(", inst->phi.dest);
+                for (size_t k = 0; k < inst->phi.in.capacity; k++) {
+                    printf("?");
+                    if (k < inst->phi.in.capacity - 1) {
+                        printf(", ");
+                    }
+                }
+                printf(")\n");
+                break;
+            case IrInstKind::kConst: printf("  v%d = %d\n", inst->aconst.dest, inst->aconst.intVal); break;
+            case IrInstKind::kBin:
+                const char *opstr;
+                switch (inst->bin.op) {
+                    case TokenType::kAdd: opstr = "add"; break;
+                    default: opstr = "?";
+                }
+                printf("  v%d = %s(v%d, v%d)\n", inst->bin.dest, opstr, inst->bin.left, inst->bin.right);
+                break;
+            default: todo("Unimplemented instruction print\n"); assert(false);
+        }
+    }
     bid++;
     for (size_t i = 0; i < basicBlock->exits.size; i++) {
         printf("->%d\n", basicBlock->exits.get(i)->id);
     }
     for (size_t i = 0; i < basicBlock->exits.size; i++) {
         BasicBlock *exit = basicBlock->exits.get(i);
-        if (bid == exit->id) print_block(bid, exit);
+        if (bid == exit->id) r_print_block(bid, exit);
     }
 }
 
-void translate_decl(Node *decl) {
+void print_block(BasicBlock *basicBlock) {
+    BlockId id{0};
+    r_print_block(id, basicBlock);
+}
+
+void translate_global_decl(Node *decl) {
     if (decl->decl.rval->kind == NodeKind::kFunc) {
         if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
-            ssa::translate_function_body(decl->decl.rval->func.body);
+            BasicBlock *block = ssa::translate_function_body(decl->decl.rval->func.body);
+            print_block(block);
         }
     }
 }
 
-/*
-void translate_global_decl_list(struct Node *declListHead) {
-IrContext irctx;
-irctx.basicBlocks = {};
-while (declListHead) {
-    if (declListHead->decl.resolvedTy->kind == TypeKind::kFuncTy) {
-        if (declListHead->decl.rval->func.body->kind == NodeKind::kBlock) {
-            irctx.basicBlocks.add(ssa::translate_function_body(declListHead->decl.rval));
-        }
+}  // namespace
+
+void translate_package(Package *package) {
+    for (size_t i = 0; i < package->globalDeclList.size; i++) {
+        translate_global_decl(package->globalDeclList.get(i)->declNode);
     }
-    declListHead = declListHead->decl.info->nextDecl;
 }
-
-BasicBlock bt[14];
-for (size_t i = 0; i < 14; i++) {
-    bt[i].id = i;
-    bt[i].exits = {};
-}
-bt[1].exits.add(&bt[2]);
-bt[1].exits.add(&bt[5]);
-bt[1].exits.add(&bt[9]);
-bt[2].exits.add(&bt[3]);
-bt[3].exits.add(&bt[3]);
-bt[3].exits.add(&bt[4]);
-bt[4].exits.add(&bt[13]);
-bt[5].exits.add(&bt[6]);
-bt[5].exits.add(&bt[7]);
-bt[6].exits.add(&bt[4]);
-bt[6].exits.add(&bt[8]);
-bt[7].exits.add(&bt[8]);
-bt[7].exits.add(&bt[12]);
-bt[8].exits.add(&bt[5]);
-bt[8].exits.add(&bt[13]);
-bt[9].exits.add(&bt[10]);
-bt[9].exits.add(&bt[11]);
-bt[10].exits.add(&bt[12]);
-bt[11].exits.add(&bt[12]);
-bt[12].exits.add(&bt[13]);
-ssa::generate_dominance_frontier(&bt[1], 14);
-// BlockId bid = 0;
-// print_block(bid, &bt[1]);
-
-for (size_t i = 0; i < irctx.basicBlocks.size; i++) {
-    BlockId bid = 0;
-    print_block(bid, irctx.basicBlocks.get(i));
-}
-}
-*/
 
 }  // namespace lcc
