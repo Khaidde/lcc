@@ -76,7 +76,7 @@ Result scope_exit_check_unused(CompilationContext *cmp) {
 }
 
 Type *create_type(TypeKind kind) {
-    Type *type = mem::malloc<Type>();
+    Type *type = mem::p_malloc<Type>();
     type->kind = kind;
     return type;
 }
@@ -422,9 +422,7 @@ Result resolve_decl_type(CompilationContext *cmp, DeclInfo *declInfo) {
                 return kError;
             }
         }
-        if (declInfo->declNode->decl.resolvedTy) {
-            // TODO: free the previous decl->decl.info->resolvedTy if it exists
-        }
+        // TODO: somehow free resolvedTy
         declInfo->declNode->decl.resolvedTy = staticTy;
     }
     return kAccept;

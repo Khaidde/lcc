@@ -4,9 +4,13 @@
 
 #include "ast.hpp"
 #include "print.hpp"
+
 namespace lcc {
+
 namespace {
+
 namespace ssa {
+
 struct SparseSet {
     void init(size_t capacity, size_t valLim) {
         dense = mem::c_malloc<size_t>(capacity);
@@ -42,12 +46,14 @@ struct SparseSet {
     size_t valLim;    // size of sparse list
 #endif
 };
+
 struct VariableInfo {
     size_t varId;
     LList<BlockId> defSites;
     ValId currId;
     LList<ValId> idStack;
 };
+
 struct TranslationContext {
     BlockId blockCnt{0};
     ValId valCnt{0};
@@ -56,6 +62,7 @@ struct TranslationContext {
     LMap<LStringView, VariableInfo *, lstr_hash, lstr_equal> varMap;
     SparseSet liveVarSet;
 };
+
 BasicBlock *create_block() {
     BasicBlock *block = mem::malloc<BasicBlock>();
     block->start = nullptr;
@@ -63,12 +70,15 @@ BasicBlock *create_block() {
     block->exits = {};
     return block;
 }
+
 BasicBlock *create_block(TranslationContext &tctx) {
     BasicBlock *block = create_block();
     block->id = tctx.blockCnt++;
     return block;
 }
+
 void cfg_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block);
+
 void cfg_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
     for (;;) {
         BasicBlock *then = create_block(tctx);
@@ -88,6 +98,7 @@ void cfg_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node 
         ifstmt = ifstmt->ifstmt.alt;
     }
 }
+
 void cfg_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
     // Goto targets for break and continue statements
     whilestmt->whilestmt.info->entry = entry;
@@ -97,6 +108,7 @@ void cfg_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, No
     entry->exits.add(exit);
     cfg_block(tctx, loop, entry, whilestmt->whilestmt.loop);
 }
+
 void cfg_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block) {
     assert(block->kind == NodeKind::kBlock);
     BasicBlock *curr = entry;
@@ -166,13 +178,16 @@ void cfg_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, No
         }
     }
     curr->exits.add(exit);
+    mem::p_free<Node>(block);
 }
+
 struct DominatorForestContext {
     size_t *ancestor;
     size_t *label;
     size_t *child;
     size_t *size;
 };
+
 void link(size_t *semi, DominatorForestContext &dfctx, size_t to, size_t from) {
     size_t curr = from;
     while (semi[dfctx.label[from]] < semi[dfctx.label[dfctx.child[curr]]]) {
@@ -198,6 +213,7 @@ void link(size_t *semi, DominatorForestContext &dfctx, size_t to, size_t from) {
         curr = dfctx.child[curr];
     }
 }
+
 void compress(size_t *semi, DominatorForestContext &dfctx, size_t node) {
     size_t ancest = dfctx.ancestor[node];
     if (dfctx.ancestor[ancest]) {
@@ -208,6 +224,7 @@ void compress(size_t *semi, DominatorForestContext &dfctx, size_t node) {
         dfctx.ancestor[node] = dfctx.ancestor[ancest];
     }
 }
+
 size_t eval(size_t *semi, DominatorForestContext &dfctx, size_t node) {
     if (dfctx.ancestor[node]) {
         compress(semi, dfctx, node);
@@ -220,12 +237,14 @@ size_t eval(size_t *semi, DominatorForestContext &dfctx, size_t node) {
     }
     return dfctx.label[node];
 }
+
 IrInst *create_inst(IrInstKind kind) {
     IrInst *inst = mem::malloc<IrInst>();
     inst->kind = kind;
     inst->next = nullptr;
     return inst;
 }
+
 void add_inst(BasicBlock *block, IrInst *inst) {
     if (block->end) {
         block->end->next = inst;
@@ -234,26 +253,38 @@ void add_inst(BasicBlock *block, IrInst *inst) {
     }
     block->end = inst;
 }
+
 ValId translate_expr(TranslationContext &tctx, BasicBlock *curr, Node *expr) {
     switch (expr->kind) {
         case NodeKind::kIntLit: {
             IrInst *aconst = create_inst(IrInstKind::kConst);
             aconst->aconst.intVal = expr->intLit.intVal;
             add_inst(curr, aconst);
+            mem::p_free<Node>(expr);
             return aconst->aconst.dest = tctx.valCnt++;
         }
-        case NodeKind::kName: return (*tctx.varMap.get(expr->name.ident))->currId;
+        case NodeKind::kName: {
+            if (expr->name.ref->decl.isAssignToGlobal) {
+                todo("Use of global variable '%s'\n", lstr_raw_str(expr->name.ident));
+                assert(false);
+            }
+            VariableInfo *varInfo = *tctx.varMap.get(expr->name.ident);
+            mem::p_free<Node>(expr);
+            return varInfo->currId;
+        }
         case NodeKind::kInfix: {
             IrInst *bin = create_inst(IrInstKind::kBin);
             bin->bin.op = expr->infix.op;
             bin->bin.left = translate_expr(tctx, curr, expr->infix.left);
             bin->bin.right = translate_expr(tctx, curr, expr->infix.right);
             add_inst(curr, bin);
+            mem::p_free<Node>(expr);
             return bin->bin.dest = tctx.valCnt++;
         }
         default: assert(false && "TODO: no translation implemented for expression kind"); return 0;
     }
 }
+
 void translate_block(TranslationContext &tctx, BasicBlock *curr) {
     if (curr->id >= tctx.blockCnt - 1) return;
     VariableInfo **liveVarList = mem::c_malloc<VariableInfo *>(tctx.varMap.size);
@@ -265,12 +296,15 @@ void translate_block(TranslationContext &tctx, BasicBlock *curr) {
     }
     for (StatementListNode *stmtNode = tctx.blockEntryStmts.get(curr->id); stmtNode; stmtNode = stmtNode->next) {
         Node *stmt = stmtNode->stmt;
-        if (stmt->kind == NodeKind::kWhile) break;
+        if (stmt->kind == NodeKind::kWhile) {
+            break;
+        }
         if (stmt->kind == NodeKind::kIf) {
             IrInst *cond = create_inst(IrInstKind::kCond);
             cond->cond.cond = translate_expr(tctx, curr, stmt->ifstmt.cond);
             cond->cond.then = curr->exits.get(0);
             add_inst(curr, cond);
+            mem::p_free<Node>(stmt);
             break;
         }
         switch (stmt->kind) {
@@ -286,6 +320,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *curr) {
                     if (tctx.liveVarSet.try_add(varInfo->varId)) {
                         liveVarList[tctx.liveVarSet.size - 1] = varInfo;
                     }
+                    mem::p_free<Node>(stmt->decl.lval);
                 } else {
                     todo("Unimplemented translation of assignment with non-name lval\n");
                     assert(false);
@@ -294,6 +329,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *curr) {
             }
             default: break;
         }
+        mem::p_free<Node>(stmt);
     }
     // Add joins to phi nodes
     for (size_t i = 0; i < curr->exits.size; i++) {
@@ -321,6 +357,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *curr) {
     }
     mem::c_free(liveVarList);
 }
+
 BasicBlock *translate_function_body(Node *functionBody) {
     TranslationContext tctx{};
     tctx.blockEntryStmts = {};
@@ -487,9 +524,12 @@ BasicBlock *translate_function_body(Node *functionBody) {
     mem::c_free((void *)((int8_t *)arena - arenaSize));
     // TODO: free all the VariableInfo * inside the map
     mem::c_free(tctx.varMap.table);
+    mem::p_free(functionBody);
     return entry;
 }
+
 }  // namespace ssa
+
 void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
     printf("b%d\n", basicBlock->id);
     IrInst *inst = basicBlock->start;
@@ -534,19 +574,23 @@ void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
         if (bid == exit->id) r_print_block(bid, exit);
     }
 }
+
 void print_block(BasicBlock *basicBlock) {
     BlockId id{0};
     r_print_block(id, basicBlock);
 }
+
 void translate_global_decl(Node *decl) {
     if (decl->decl.rval->kind == NodeKind::kFunc) {
         if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
             BasicBlock *block = ssa::translate_function_body(decl->decl.rval->func.body);
+            mem::p_free(decl->decl.rval);
             print_block(block);
         }
     }
 }
 }  // namespace
+
 void translate_package(Package *package) {
     for (size_t i = 0; i < package->globalDeclList.size; i++) {
         translate_global_decl(package->globalDeclList.get(i)->declNode);

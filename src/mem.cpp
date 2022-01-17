@@ -9,12 +9,6 @@
 
 namespace lcc::mem {
 
-namespace {
-
-size_t align(size_t bytes) { return (bytes + sizeof(intptr_t) - 1) & ~(sizeof(intptr_t) - 1); }
-
-}  // namespace
-
 ArenaAllocator allocator;
 
 ArenaAllocator::Block *ArenaAllocator::create_block() {

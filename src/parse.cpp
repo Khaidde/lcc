@@ -13,7 +13,7 @@ bool has_errors(Lexer *l) { return lex_peek(l)->type == TokenType::kErr; }
 bool check_peek(Lexer *l, TokenType type) { return lex_peek(l)->type == type; }
 
 Node *create_node(Lexer *l, NodeKind kind) {
-    Node *node = mem::malloc<Node>();
+    Node *node = mem::p_malloc<Node>();
     node->startI = lex_peek(l)->startI;
     node->kind = kind;
     return node;
