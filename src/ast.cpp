@@ -152,8 +152,8 @@ void r_print_ast(Node *node, size_t depth) {
             }
             printf("\n");
 
-            for (size_t i = 0; i < node->block.stmts.size; i++) {
-                r_print_ast(node->block.stmts.get(i), depth + 1);
+            for (StatementListNode *stmtNode = node->block.start; stmtNode; stmtNode = stmtNode->next) {
+                r_print_ast(stmtNode->stmt, depth + 1);
             }
             break;
         case NodeKind::kIf:

@@ -518,10 +518,24 @@ Node *parse_while(Lexer *l) {
     return whilestmt;
 }
 
+void add_statement(Node *block, Node *stmt) {
+    assert(block->kind == NodeKind::kBlock);
+    StatementListNode *stmtNode = mem::malloc<StatementListNode>();
+    stmtNode->stmt = stmt;
+    stmtNode->next = nullptr;
+    if (block->block.head) {
+        block->block.head->next = stmtNode;
+    } else {
+        block->block.start = stmtNode;
+    }
+    block->block.head = stmtNode;
+}
+
 Node *parse_block(Lexer *l) {
     assert(check_peek(l, TokenType::kLCurl));
     Node *block = create_node(l, NodeKind::kBlock);
-    block->block.stmts = {};
+    block->block.start = nullptr;
+    block->block.head = nullptr;
     block->block.branchLevel = (size_t)-1;
     lex_next(l);  // next {
 
@@ -533,14 +547,14 @@ Node *parse_block(Lexer *l) {
         switch (lex_peek(l)->type) {
             case TokenType::kLCurl:
                 if (Node *innerBlock = parse_block(l)) {
-                    block->block.stmts.add(innerBlock);
+                    add_statement(block, innerBlock);
                 } else {
                     return nullptr;
                 }
                 break;
             case TokenType::kIf:
                 if (Node *ifstmt = parse_if(l)) {
-                    block->block.stmts.add(ifstmt);
+                    add_statement(block, ifstmt);
                 } else {
                     return nullptr;
                 }
@@ -555,7 +569,7 @@ Node *parse_block(Lexer *l) {
                 lex_next(l);  // next 'ident'
                 if (Node *whilestmt = parse_while(l)) {
                     whilestmt->whilestmt.label = label.ident;
-                    block->block.stmts.add(whilestmt);
+                    add_statement(block, whilestmt);
                 } else {
                     return nullptr;
                 }
@@ -563,7 +577,7 @@ Node *parse_block(Lexer *l) {
             }
             case TokenType::kWhile:
                 if (Node *whilestmt = parse_while(l)) {
-                    block->block.stmts.add(whilestmt);
+                    add_statement(block, whilestmt);
                 } else {
                     return nullptr;
                 }
@@ -573,7 +587,7 @@ Node *parse_block(Lexer *l) {
                 ret->ret.value = nullptr;  // Return values are obtained in following statements
                 lex_next(l);               // next ret
                 end_node(l, ret);
-                block->block.stmts.add(ret);
+                add_statement(block, ret);
                 break;
             }
             case TokenType::kBreak:
@@ -590,7 +604,7 @@ Node *parse_block(Lexer *l) {
                     loopbr->loopbr.label.src = nullptr;
                 }
                 end_node(l, loopbr);
-                block->block.stmts.add(loopbr);
+                add_statement(block, loopbr);
                 break;
             }
             case TokenType::kEof:
@@ -602,8 +616,8 @@ Node *parse_block(Lexer *l) {
                 if (Node *declOrExpr = parse_decl_or_expr(l)) {
                     // Set return value here for better error ouput
                     if (declOrExpr->kind != NodeKind::kDecl) {
-                        if (block->block.stmts.size) {
-                            Node *ret = block->block.stmts.last();
+                        if (block->block.start) {
+                            Node *ret = block->block.head->stmt;
                             if (ret->kind == NodeKind::kRet) {
                                 ret->ret.value = declOrExpr;
                                 end_node(l, ret);
@@ -611,7 +625,7 @@ Node *parse_block(Lexer *l) {
                             }
                         }
                     }
-                    block->block.stmts.add(declOrExpr);
+                    add_statement(block, declOrExpr);
                 } else {
                     return nullptr;
                 }

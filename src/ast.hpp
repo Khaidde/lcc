@@ -130,8 +130,14 @@ struct FuncNode {
     Node *body;
 };
 
+struct StatementListNode {
+    Node *stmt;
+    StatementListNode *next;
+};
+
 struct BlockNode {
-    LList<Node *> stmts;
+    StatementListNode *start;
+    StatementListNode *head;
     size_t branchLevel;
 };
 

@@ -22,8 +22,9 @@ enum class IrInstKind {
 };
 
 struct PhiIrInst {
+    LStringView varName;
     ValId dest;
-    LList<ValId> in;
+    LList<ValId> joins;
 };
 
 struct ConstIrInst {
@@ -41,6 +42,7 @@ struct BinIrInst {
 struct CallIrInst {
     ValId dest;
     // TODO: should also contain name of call
+    size_t cnt;
     ValId *args;
 };
 
@@ -56,6 +58,7 @@ struct CondIrInst {
 
 struct IrInst {
     IrInstKind kind;
+    IrInst *next;
     union {
         PhiIrInst phi;
         ConstIrInst aconst;
@@ -68,7 +71,9 @@ struct IrInst {
 
 struct BasicBlock {
     BlockId id;
-    LList<IrInst *> insts;
+
+    IrInst *start;
+    IrInst *end;
     LList<BasicBlock *> exits;
 };
 

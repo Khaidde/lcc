@@ -491,8 +491,9 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
     // block will not "break out of itself". The algorithm checks out ;)
     block->block.branchLevel = scope_depth(cmp->scopeStack) + 1;
 
-    for (size_t i = 0; i < block->block.stmts.size; i++) {
-        Node *stmt = block->block.stmts.get(i);
+    StatementListNode *stmtNode = block->block.start;
+    while (stmtNode) {
+        Node *stmt = stmtNode->stmt;
         if (block->block.branchLevel <= scope_depth(cmp->scopeStack)) {
             dx_err(at_node(cmp->currFile->finfo, stmt), "Unreachable code\n");
             return kError;
@@ -636,6 +637,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 }
                 if (analyze_function_bodies(cmp)) return kError;
         }
+        stmtNode = stmtNode->next;
     }
     return kAccept;
 }
