@@ -25,8 +25,6 @@ void reset_print_color();
 
 [[noreturn]] void unreachable();
 
-[[noreturn]] void panic(const char *format, ...);
-
 void err(const char *format, ...);
 
 void todo(const char *format, ...);

@@ -1,8 +1,31 @@
 test := :() {
+
+/*
+  a := 1
+  if a + 2 {
+    a = 3
+  } else if a + 4 {
+    a = 5
+  } else if a + 6 {
+    a = 7
+  } else {
+    a = 8
+  }
+  while 9 {
+    a = 10
+    if 11 {
+      continue
+    }
+  }
+  */
+
+  k := 10
   i := 20
   j := 30 + 40
   s := 50 + k
   s = 60
+  d := s
+  d = 1000
 
   while i {
     j = j + 70

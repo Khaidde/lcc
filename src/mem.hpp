@@ -9,7 +9,8 @@
 #include "print.hpp"
 #endif
 
-namespace lcc::mem {
+namespace lcc {
+namespace mem {
 
 static constexpr size_t align(size_t bytes) { return (bytes + sizeof(intptr_t) - 1) & ~(sizeof(intptr_t) - 1); }
 
@@ -121,6 +122,7 @@ static inline T *c_realloc(void *ptr, size_t newCount) {
 
 static inline void c_free(void *ptr) { ::free(ptr); }
 
-}  // namespace lcc::mem
+}  // namespace mem
+}  // namespace lcc
 
 #endif

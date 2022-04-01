@@ -47,10 +47,21 @@ struct SparseSet {
 #endif
 };
 
+struct VariableRef {
+    size_t varId;
+    ValId *valLoc;
+    bool isDefNotUse;
+    VariableRef *nextRef;
+};
+
+struct VariableRefList {
+    VariableRef *start;
+    VariableRef *end;
+};
+
 struct VariableInfo {
     size_t varId;
     LList<BlockId> defSites;
-    ValId currId;
     LList<ValId> idStack;
 };
 
@@ -58,17 +69,78 @@ struct TranslationContext {
     BlockId blockCnt{0};
     ValId valCnt{0};
     LList<BasicBlock *> *dominators;
-    LList<StatementListNode *> blockEntryStmts;
+
     LMap<LStringView, VariableInfo *, lstr_hash, lstr_equal> varMap;
+    LList<VariableInfo *> varInfos;
     SparseSet liveVarSet;
+
+    LList<VariableRefList> refs;  // Keep track of use and define for variable renaming
 };
+
+Inst *create_inst(InstKind kind) {
+    Inst *inst = mem::malloc<Inst>();
+    inst->kind = kind;
+    inst->next = nullptr;
+    return inst;
+}
+
+void add_inst(BasicBlock *block, Inst *inst) {
+    if (block->end) {
+        block->end->next = inst;
+    } else {
+        block->start = inst;
+    }
+    block->end = inst;
+}
+
+static BasicBlock *succBuff[2];
+
+BasicBlock **get_successors(size_t &numSucc, BasicBlock *block) {
+    switch (block->terminator->kind) {
+        case TerminatorKind::kGoto: {
+            succBuff[0] = block->terminator->tgoto.target;
+            numSucc = 1;
+            return succBuff;
+        }
+        case TerminatorKind::kCond: {
+            succBuff[0] = block->terminator->cond.then;
+            succBuff[1] = block->terminator->cond.alt;
+            numSucc = 2;
+            return succBuff;
+        }
+        case TerminatorKind::kRet: numSucc = 0; return 0;
+    }
+}
+
+Terminator *create_terminator(TerminatorKind kind) {
+    Terminator *terminator = mem::malloc<Terminator>();
+    terminator->kind = kind;
+    return terminator;
+}
 
 BasicBlock *create_block() {
     BasicBlock *block = mem::malloc<BasicBlock>();
     block->start = nullptr;
     block->end = nullptr;
-    block->exits = {};
+    block->terminator = nullptr;
     return block;
+}
+
+VariableRef *create_variable_reference(TranslationContext &tctx, BlockId blockId) {
+    while (tctx.refs.size <= blockId) {
+        tctx.refs.add({nullptr, nullptr});
+    }
+    VariableRefList &refList = tctx.refs.get(blockId);
+
+    VariableRef *newRef = mem::p_malloc<VariableRef>();
+    newRef->nextRef = nullptr;
+    if (refList.start) {
+        refList.end->nextRef = newRef;
+    } else {
+        refList.start = newRef;
+    }
+    refList.end = newRef;
+    return newRef;
 }
 
 BasicBlock *create_block(TranslationContext &tctx) {
@@ -77,108 +149,167 @@ BasicBlock *create_block(TranslationContext &tctx) {
     return block;
 }
 
-void cfg_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block);
+void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block);
 
-void cfg_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
+ValId &translate_expr(TranslationContext &tctx, BasicBlock *curr, Node *expr) {
+    switch (expr->kind) {
+        case NodeKind::kIntLit: {
+            Inst *aconst = create_inst(InstKind::kConst);
+            aconst->aconst.intVal = expr->intLit.intVal;
+            add_inst(curr, aconst);
+            mem::p_free(expr);
+            return aconst->aconst.dest = tctx.valCnt++;
+        }
+        case NodeKind::kName: {
+            if (expr->name.ref->decl.isAssignToGlobal) {
+                todo("Use of global variable '%s'\n", lstr_raw_str(expr->name.ident));
+                assert(false);
+            }
+            Inst *usage = create_inst(InstKind::kUsage);
+            VariableRef *varRef = create_variable_reference(tctx, curr->id);
+            varRef->varId = (*tctx.varMap.get(expr->name.ident))->varId;
+            varRef->valLoc = &usage->usage.useId;
+            varRef->isDefNotUse = false;
+            add_inst(curr, usage);
+            mem::p_free(expr);
+            return usage->usage.dest = tctx.valCnt++;
+        }
+        case NodeKind::kInfix: {
+            Inst *bin = create_inst(InstKind::kBin);
+            bin->bin.op = expr->infix.op;
+            bin->bin.left = translate_expr(tctx, curr, expr->infix.left);
+            bin->bin.right = translate_expr(tctx, curr, expr->infix.right);
+            add_inst(curr, bin);
+            mem::p_free(expr);
+            return bin->bin.dest = tctx.valCnt++;
+        }
+        default: assert(false && "TODO: no translation implemented for expression kind"); unreachable();
+    }
+}
+
+void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
     for (;;) {
+        entry->terminator = create_terminator(TerminatorKind::kCond);
+        entry->terminator->cond.predicate = translate_expr(tctx, entry, ifstmt->ifstmt.cond);
+
         BasicBlock *then = create_block(tctx);
-        entry->exits.add(then);
-        cfg_block(tctx, then, exit, ifstmt->ifstmt.then);
+        entry->terminator->cond.then = then;
+        translate_block(tctx, then, exit, ifstmt->ifstmt.then);
+
         if (!ifstmt->ifstmt.alt) {
-            entry->exits.add(exit);
+            entry->terminator->cond.alt = exit;
             return;
         }
+        BasicBlock *alt = create_block(tctx);
+        entry->terminator->cond.alt = alt;
         if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
-            BasicBlock *alt = create_block(tctx);
-            entry->exits.add(alt);
-            cfg_block(tctx, alt, exit, ifstmt->ifstmt.alt);
+            translate_block(tctx, alt, exit, ifstmt->ifstmt.alt);
             return;
         }
         assert(ifstmt->ifstmt.alt->kind == NodeKind::kIf);
+        entry = alt;
         ifstmt = ifstmt->ifstmt.alt;
     }
 }
 
-void cfg_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
+void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
+    entry->terminator = create_terminator(TerminatorKind::kCond);
+    entry->terminator->cond.alt = exit;
+    entry->terminator->cond.predicate = translate_expr(tctx, entry, whilestmt->whilestmt.cond);
+
     // Goto targets for break and continue statements
     whilestmt->whilestmt.info->entry = entry;
     whilestmt->whilestmt.info->exit = exit;
+
     BasicBlock *loop = create_block(tctx);
-    entry->exits.add(loop);
-    entry->exits.add(exit);
-    cfg_block(tctx, loop, entry, whilestmt->whilestmt.loop);
+    entry->terminator->cond.then = loop;
+
+    loop->terminator = create_terminator(TerminatorKind::kGoto);
+    loop->terminator->tgoto.target = entry;
+
+    translate_block(tctx, loop, entry, whilestmt->whilestmt.loop);
 }
 
-void cfg_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block) {
+void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block) {
     assert(block->kind == NodeKind::kBlock);
     BasicBlock *curr = entry;
     for (StatementListNode *stmtNode = block->block.start; stmtNode; stmtNode = stmtNode->next) {
-        if (tctx.blockEntryStmts.size < tctx.blockCnt) tctx.blockEntryStmts.add(stmtNode);
         Node *stmt = stmtNode->stmt;
         switch (stmt->kind) {
             case NodeKind::kDecl: {
                 if (stmt->decl.lval->kind == NodeKind::kName) {
-                    LList<BlockId> *defsites;
-                    if (VariableInfo **varInfo = tctx.varMap.get(stmt->decl.lval->name.ident)) {
-                        defsites = &(*varInfo)->defSites;
+                    VariableInfo *varInfo;
+                    if (VariableInfo **varInfoRef = tctx.varMap.get(stmt->decl.lval->name.ident)) {
+                        varInfo = *varInfoRef;
+                        LList<BlockId> &defSites = varInfo->defSites;
+                        // Ensure no duplicates before addition
+                        if (!defSites.size || defSites.last() != curr->id) {
+                            defSites.add(curr->id);
+                        }
                     } else {
-                        VariableInfo *newInfo = mem::malloc<VariableInfo>();
-                        newInfo->varId = tctx.varMap.size;
-                        newInfo->defSites = {};
-                        newInfo->idStack = {};
-                        defsites = &newInfo->defSites;
-                        tctx.varMap.try_put(stmt->decl.lval->name.ident, newInfo);
+                        varInfo = mem::malloc<VariableInfo>();
+                        varInfo->varId = tctx.varMap.size;
+                        varInfo->defSites = {};
+                        varInfo->idStack = {};
+                        varInfo->defSites.add(curr->id);
+                        tctx.varMap.try_put(stmt->decl.lval->name.ident, varInfo);
+                        tctx.varInfos.add(varInfo);
                     }
-                    // Ensure no duplicates before addition
-                    if (!defsites->size || defsites->last() != curr->id) {
-                        defsites->add(curr->id);
-                    }
+                    ValId *valLoc = &translate_expr(tctx, curr, stmt->decl.rval);
+                    VariableRef *varRef = create_variable_reference(tctx, curr->id);
+                    varRef->varId = varInfo->varId;
+                    varRef->valLoc = valLoc;
+                    varRef->isDefNotUse = true;
                 }
                 break;
             }
             case NodeKind::kIf: {
                 if (stmtNode->next) {
                     BasicBlock *ifExit = create_block();
-                    cfg_if(tctx, curr, ifExit, stmt);
+                    translate_if(tctx, curr, ifExit, stmt);
                     ifExit->id = tctx.blockCnt++;
                     curr = ifExit;
+                    break;
                 } else {
-                    cfg_if(tctx, curr, exit, stmt);
+                    translate_if(tctx, curr, exit, stmt);
                     return;
                 }
                 break;
             }
             case NodeKind::kWhile: {
-                if (stmtNode != block->block.start) {
+                if (curr->start) {
                     BasicBlock *cond = create_block(tctx);
-                    tctx.blockEntryStmts.add(stmtNode);
-                    curr->exits.add(cond);
+                    curr->terminator = create_terminator(TerminatorKind::kGoto);
+                    curr->terminator->tgoto.target = cond;
                     curr = cond;
                 }
                 if (stmtNode->next) {
                     BasicBlock *whileExit = create_block();
-                    cfg_while(tctx, curr, whileExit, stmt);
+                    translate_while(tctx, curr, whileExit, stmt);
                     whileExit->id = tctx.blockCnt++;
                     curr = whileExit;
                     break;
                 } else {
-                    cfg_while(tctx, curr, exit, stmt);
+                    translate_while(tctx, curr, exit, stmt);
                     return;
                 }
+                break;
             }
             case NodeKind::kLoopBr: {
+                curr->terminator = create_terminator(TerminatorKind::kGoto);
                 if (stmt->loopbr.isBreak) {
-                    curr->exits.add(stmt->loopbr.ref->whilestmt.info->exit);
+                    curr->terminator->tgoto.target = stmt->loopbr.ref->whilestmt.info->exit;
                 } else {
-                    curr->exits.add(stmt->loopbr.ref->whilestmt.info->entry);
+                    curr->terminator->tgoto.target = stmt->loopbr.ref->whilestmt.info->entry;
                 }
                 return;
             }
             default: break;
         }
     }
-    curr->exits.add(exit);
-    mem::p_free<Node>(block);
+    curr->terminator = create_terminator(TerminatorKind::kGoto);
+    curr->terminator->tgoto.target = exit;
+    mem::p_free(block);
 }
 
 struct DominatorForestContext {
@@ -238,134 +369,66 @@ size_t eval(size_t *semi, DominatorForestContext &dfctx, size_t node) {
     return dfctx.label[node];
 }
 
-IrInst *create_inst(IrInstKind kind) {
-    IrInst *inst = mem::malloc<IrInst>();
-    inst->kind = kind;
-    inst->next = nullptr;
-    return inst;
-}
-
-void add_inst(BasicBlock *block, IrInst *inst) {
-    if (block->end) {
-        block->end->next = inst;
-    } else {
-        block->start = inst;
+void rename_block(TranslationContext &tctx, BasicBlock *curr) {
+    size_t *numDefs = mem::c_malloc<size_t>(tctx.varMap.size);
+    for (size_t i = 0; i < tctx.varMap.size; i++) {
+        numDefs[i] = 0;
     }
-    block->end = inst;
-}
 
-ValId translate_expr(TranslationContext &tctx, BasicBlock *curr, Node *expr) {
-    switch (expr->kind) {
-        case NodeKind::kIntLit: {
-            IrInst *aconst = create_inst(IrInstKind::kConst);
-            aconst->aconst.intVal = expr->intLit.intVal;
-            add_inst(curr, aconst);
-            mem::p_free<Node>(expr);
-            return aconst->aconst.dest = tctx.valCnt++;
-        }
-        case NodeKind::kName: {
-            if (expr->name.ref->decl.isAssignToGlobal) {
-                todo("Use of global variable '%s'\n", lstr_raw_str(expr->name.ident));
-                assert(false);
+    Inst *phi = curr->start;
+    while (phi && phi->kind == InstKind::kPhi) {
+        VariableInfo *varInfo = tctx.varInfos.get(phi->phi.varId);
+        varInfo->idStack.add(phi->phi.dest);
+        numDefs[varInfo->varId]++;
+        phi = phi->next;
+    }
+
+    if (curr->id < tctx.refs.size) {
+        VariableRef *currRef = tctx.refs.get(curr->id).start;
+        while (currRef) {
+            VariableInfo *varInfo = tctx.varInfos.get(currRef->varId);
+            if (currRef->isDefNotUse) {
+                varInfo->idStack.add(*currRef->valLoc);
+                numDefs[varInfo->varId]++;
+            } else {
+                *currRef->valLoc = varInfo->idStack.last();
             }
-            VariableInfo *varInfo = *tctx.varMap.get(expr->name.ident);
-            mem::p_free<Node>(expr);
-            return varInfo->currId;
+            currRef = currRef->nextRef;
         }
-        case NodeKind::kInfix: {
-            IrInst *bin = create_inst(IrInstKind::kBin);
-            bin->bin.op = expr->infix.op;
-            bin->bin.left = translate_expr(tctx, curr, expr->infix.left);
-            bin->bin.right = translate_expr(tctx, curr, expr->infix.right);
-            add_inst(curr, bin);
-            mem::p_free<Node>(expr);
-            return bin->bin.dest = tctx.valCnt++;
-        }
-        default: assert(false && "TODO: no translation implemented for expression kind"); return 0;
+        mem::p_free(currRef);
     }
-}
 
-void translate_block(TranslationContext &tctx, BasicBlock *curr) {
-    if (curr->id >= tctx.blockCnt - 1) return;
-    VariableInfo **liveVarList = mem::c_malloc<VariableInfo *>(tctx.varMap.size);
-    for (IrInst *phi = curr->start; phi; phi = phi->next) {
-        VariableInfo *varInfo = *tctx.varMap.get(phi->phi.varName);
-        varInfo->currId = phi->phi.dest = tctx.valCnt++;
-        tctx.liveVarSet.try_add(varInfo->varId);
-        liveVarList[tctx.liveVarSet.size - 1] = varInfo;
-    }
-    for (StatementListNode *stmtNode = tctx.blockEntryStmts.get(curr->id); stmtNode; stmtNode = stmtNode->next) {
-        Node *stmt = stmtNode->stmt;
-        if (stmt->kind == NodeKind::kWhile) {
-            break;
-        }
-        if (stmt->kind == NodeKind::kIf) {
-            IrInst *cond = create_inst(IrInstKind::kCond);
-            cond->cond.cond = translate_expr(tctx, curr, stmt->ifstmt.cond);
-            cond->cond.then = curr->exits.get(0);
-            add_inst(curr, cond);
-            mem::p_free<Node>(stmt);
-            break;
-        }
-        switch (stmt->kind) {
-            case NodeKind::kDecl: {
-                if (!stmt->decl.isDecl && stmt->decl.isAssignToGlobal) {
-                    todo("Assignment to global '%s'\n", lstr_raw_str(stmt->decl.lval->name.ident));
-                    assert(false);
-                }
-                ValId declId = translate_expr(tctx, curr, stmt->decl.rval);
-                if (stmt->decl.lval->kind == NodeKind::kName) {
-                    VariableInfo *varInfo = *tctx.varMap.get(stmt->decl.lval->name.ident);
-                    varInfo->currId = declId;
-                    if (tctx.liveVarSet.try_add(varInfo->varId)) {
-                        liveVarList[tctx.liveVarSet.size - 1] = varInfo;
-                    }
-                    mem::p_free<Node>(stmt->decl.lval);
-                } else {
-                    todo("Unimplemented translation of assignment with non-name lval\n");
-                    assert(false);
-                }
-                break;
-            }
-            default: break;
-        }
-        mem::p_free<Node>(stmt);
-    }
     // Add joins to phi nodes
-    for (size_t i = 0; i < curr->exits.size; i++) {
-        for (IrInst *phi = curr->exits.get(i)->start; phi && phi->kind == IrInstKind::kPhi; phi = phi->next) {
-            VariableInfo *varInfo = *tctx.varMap.get(phi->phi.varName);
-            phi->phi.joins.add(varInfo->currId);
+    size_t numSucc;
+    BasicBlock **succ = get_successors(numSucc, curr);
+    for (size_t i = 0; i < numSucc; i++) {
+        Inst *phi = succ[i]->start;
+        while (phi && phi->kind == InstKind::kPhi) {
+            VariableInfo *varInfo = tctx.varInfos.get(phi->phi.varId);
+            phi->phi.joins.add(varInfo->idStack.last());
+            phi = phi->next;
         }
     }
-    // Save value id of live variables
-    size_t numLiveVars = tctx.liveVarSet.size;
-    for (size_t i = 0; i < numLiveVars; i++) {
-        liveVarList[i]->idStack.add(liveVarList[i]->currId);
-    }
-    tctx.liveVarSet.clear();
     // Translate dominator children
     for (size_t i = 0; i < tctx.dominators[curr->id + 1].size; i++) {
-        translate_block(tctx, tctx.dominators[curr->id + 1].get(i));
+        rename_block(tctx, tctx.dominators[curr->id + 1].get(i));
     }
-    // Restore value id of live variables
-    for (size_t i = 0; i < numLiveVars; i++) {
-        liveVarList[i]->idStack.size--;
-        if (liveVarList[i]->idStack.size) {
-            liveVarList[i]->currId = liveVarList[i]->idStack.last();
-        }
+    // Pop id stack for each variable
+    for (size_t i = 0; i < tctx.varMap.size; i++) {
+        tctx.varInfos.get(i)->idStack.size -= numDefs[i];
     }
-    mem::c_free(liveVarList);
+    mem::c_free(numDefs);
 }
 
 BasicBlock *translate_function_body(Node *functionBody) {
     TranslationContext tctx{};
-    tctx.blockEntryStmts = {};
     tctx.varMap.init();
     BasicBlock *entry = create_block(tctx);
     BasicBlock *exit = create_block();
-    cfg_block(tctx, entry, exit, functionBody);
+    translate_block(tctx, entry, exit, functionBody);
     exit->id = tctx.blockCnt++;
+    exit->terminator = create_terminator(TerminatorKind::kRet);
+
     // Fast dominator algorithm by Lengauer and Tarjan
     // Uses the "sophisticated" eval and link methods
     // Allocate memory for data structures
@@ -400,6 +463,7 @@ BasicBlock *translate_function_body(Node *functionBody) {
     arena = &bucket[numNodes];
     tctx.dominators = (LList<BasicBlock *> *)arena;
     arena = &tctx.dominators[numNodes];
+
     // Initialize data structures
     for (size_t i = 0; i < numNodes; i++) {
         semi[i] = 0;
@@ -416,6 +480,7 @@ BasicBlock *translate_function_body(Node *functionBody) {
     vertex[0] = 0;
     dfctx.label[0] = 0;
     dfctx.size[0] = 0;
+
     // Iterative DFS numbering
     LList<BasicBlock *> stack = {};
     stack.add(entry);
@@ -430,12 +495,16 @@ BasicBlock *translate_function_body(Node *functionBody) {
         assert(cnt < numNodes);
         blocks[tn] = top;
         vertex[cnt] = dfctx.label[tn] = tn;
-        for (size_t i = 0; i < top->exits.size; i++) {
-            size_t pn = top->exits.get(i)->id + 1;
+
+        size_t numSucc;
+        BasicBlock **succ = get_successors(numSucc, top);
+        for (size_t i = 0; i < numSucc; i++) {
+            size_t pn = succ[i]->id + 1;
             pred[pn].add(tn);
-            if (semi[pn]) continue;
-            parent[pn] = tn;
-            stack.add(top->exits.get(i));
+            if (!semi[pn]) {
+                parent[pn] = tn;
+                stack.add(succ[i]);
+            }
         }
     }
     for (size_t i = numNodes - 1; i >= 2; i--) {
@@ -456,12 +525,14 @@ BasicBlock *translate_function_body(Node *functionBody) {
         }
         parenBucket.size = 0;
     }
+
     // Explicitly define immediate dominators
     for (size_t i = 2; i < numNodes; i++) {
         size_t wn = vertex[i];
         if (idom[wn] != vertex[semi[wn]]) idom[wn] = idom[idom[wn]];
         tctx.dominators[idom[wn]].add(blocks[wn]);
     }
+
     // Simple Dominance Frontier algorithm by Cooper et al.
     SparseSet *domFronts = mem::c_malloc<SparseSet>(numNodes);
     for (size_t i = 0; i < numNodes; i++) {
@@ -478,41 +549,46 @@ BasicBlock *translate_function_body(Node *functionBody) {
             }
         }
     }
+
     // Iterated dominance-frontier and phi node insertion
     SparseSet philist;
     philist.init(numNodes, numNodes);
     SparseSet worklist;
     worklist.init(numNodes, numNodes);
-    for (size_t i = 0; i < tctx.varMap.capacity; i++) {
-        // TODO: more efficient iteration of variable name deflists
-        if (tctx.varMap.table[i].psl) {
-            worklist.clear();
-            philist.clear();
-            VariableInfo *var = tctx.varMap.table[i].val;
-            for (size_t k = 0; k < var->defSites.size; k++) {
-                worklist.try_add(var->defSites.get(k) + 1);
-            }
-            while (worklist.size) {
-                size_t def = worklist.pop();
-                for (size_t k = 0; k < domFronts[def].size; k++) {
-                    size_t dfy = domFronts[def].dense[k];
-                    if (!philist.contains(dfy)) {
-                        IrInst *phi = create_inst(IrInstKind::kPhi);
-                        phi->phi.varName = tctx.varMap.table[i].key;
-                        phi->phi.joins.init(pred[dfy].size);
-                        add_inst(blocks[dfy], phi);
-                        philist.try_add(dfy);
-                        // TODO: optimization where a node shouldn't be added if the variable
-                        // is already defined there
-                        if (dfy != def) worklist.try_add(dfy);
-                    }
+    for (size_t i = 0; i < tctx.varInfos.size; i++) {
+        worklist.clear();
+        philist.clear();
+        VariableInfo *var = tctx.varInfos.get(i);
+        for (size_t k = 0; k < var->defSites.size; k++) {
+            worklist.try_add(var->defSites.get(k) + 1);
+        }
+        while (worklist.size) {
+            size_t def = worklist.pop();
+            for (size_t k = 0; k < domFronts[def].size; k++) {
+                size_t dfy = domFronts[def].dense[k];
+                if (!philist.contains(dfy)) {
+                    Inst *phi = create_inst(InstKind::kPhi);
+                    phi->phi.varId = var->varId;
+                    phi->phi.dest = tctx.valCnt++;
+                    phi->phi.joins.init(pred[dfy].size);
+
+                    phi->next = blocks[dfy]->start;
+                    blocks[dfy]->start = phi;
+
+                    philist.try_add(dfy);
+
+                    // TODO: optimization where a node shouldn't be added if
+                    // the variable is already defined there
+                    if (dfy != def) worklist.try_add(dfy);
                 }
             }
         }
     }
+
     // Translation
     tctx.liveVarSet.init(tctx.varMap.size, tctx.varMap.size);
-    translate_block(tctx, entry);
+    rename_block(tctx, entry);
+
     mem::c_free(tctx.liveVarSet.dense);
     mem::c_free(tctx.liveVarSet.sparse);
     // Free data structures
@@ -532,10 +608,10 @@ BasicBlock *translate_function_body(Node *functionBody) {
 
 void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
     printf("b%d\n", basicBlock->id);
-    IrInst *inst = basicBlock->start;
+    Inst *inst = basicBlock->start;
     while (inst) {
         switch (inst->kind) {
-            case IrInstKind::kPhi:
+            case InstKind::kPhi:
                 printf("  v%d = phi(", inst->phi.dest);
                 for (size_t k = 0; k < inst->phi.joins.size; k++) {
                     printf("v%d", inst->phi.joins.get(k));
@@ -545,8 +621,9 @@ void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
                 }
                 printf(")\n");
                 break;
-            case IrInstKind::kConst: printf("  v%d = %d\n", inst->aconst.dest, inst->aconst.intVal); break;
-            case IrInstKind::kBin:
+            case InstKind::kConst: printf("  v%d = %d\n", inst->aconst.dest, inst->aconst.intVal); break;
+            case InstKind::kUsage: printf("  v%d = v%d\n", inst->usage.dest, inst->usage.useId); break;
+            case InstKind::kBin:
                 const char *opstr;
                 switch (inst->bin.op) {
                     case TokenType::kAdd: opstr = "add"; break;
@@ -554,24 +631,28 @@ void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
                 }
                 printf("  v%d = %s(v%d, v%d)\n", inst->bin.dest, opstr, inst->bin.left, inst->bin.right);
                 break;
-            case IrInstKind::kCond:
-                printf("  if v%d -> b%d", inst->cond.cond, inst->cond.then->id);
-                if (inst->cond.alt) {
-                    printf(" else b%d", inst->cond.alt->id);
-                }
-                printf("\n");
-                break;
-            default: todo("Unimplemented instruction print\n"); assert(false);
+            case InstKind::kCall: todo("Unimplemented call print\n"); assert(false);
         }
         inst = inst->next;
     }
     bid++;
-    for (size_t i = 0; i < basicBlock->exits.size; i++) {
-        printf("->%d\n", basicBlock->exits.get(i)->id);
-    }
-    for (size_t i = 0; i < basicBlock->exits.size; i++) {
-        BasicBlock *exit = basicBlock->exits.get(i);
-        if (bid == exit->id) r_print_block(bid, exit);
+    switch (basicBlock->terminator->kind) {
+        case TerminatorKind::kGoto: {
+            BasicBlock *exit = basicBlock->terminator->tgoto.target;
+            printf("  goto b%d\n", exit->id);
+            if (bid == exit->id) r_print_block(bid, exit);
+            break;
+        }
+        case TerminatorKind::kCond: {
+            BasicBlock *then = basicBlock->terminator->cond.then;
+            BasicBlock *alt = basicBlock->terminator->cond.alt;
+            printf("  if v%d -> b%d b%d\n", basicBlock->terminator->cond.predicate, then->id, alt->id);
+
+            if (bid == then->id) r_print_block(bid, then);
+            if (bid == alt->id) r_print_block(bid, alt);
+            break;
+        }
+        case TerminatorKind::kRet: printf("  ret\n"); break;
     }
 }
 

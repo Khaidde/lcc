@@ -12,69 +12,85 @@ struct BasicBlock;
 using BlockId = size_t;
 using ValId = size_t;
 
-enum class IrInstKind {
+enum class InstKind {
     kPhi,
     kConst,
+    kUsage,
     kBin,
     kCall,
-    kGoto,
-    kCond,
 };
 
-struct PhiIrInst {
-    LStringView varName;
+struct PhiInst {
+    size_t varId;
     ValId dest;
     LList<ValId> joins;
 };
 
-struct ConstIrInst {
+struct ConstInst {
     ValId dest;
     uint16_t intVal;
 };
 
-struct BinIrInst {
+struct UsageInst {
+    ValId dest;
+    ValId useId;
+};
+
+struct BinInst {
     ValId dest;
     TokenType op;
     ValId left;
     ValId right;
 };
 
-struct CallIrInst {
+struct CallInst {
     ValId dest;
     // TODO: should also contain name of call
     size_t cnt;
     ValId *args;
 };
 
-struct BranchIrInst {
-    BasicBlock *block;
+struct Inst {
+    InstKind kind;
+    Inst *next;
+    union {
+        PhiInst phi;
+        ConstInst aconst;
+        UsageInst usage;
+        BinInst bin;
+        CallInst call;
+    };
 };
 
-struct CondIrInst {
-    ValId cond;
+enum class TerminatorKind {
+    kGoto,
+    kCond,
+    kRet,
+};
+
+struct GotoTerminator {
+    BasicBlock *target;
+};
+
+struct CondTerminator {
+    ValId predicate;
     BasicBlock *then;
     BasicBlock *alt;
 };
 
-struct IrInst {
-    IrInstKind kind;
-    IrInst *next;
+struct Terminator {
+    TerminatorKind kind;
     union {
-        PhiIrInst phi;
-        ConstIrInst aconst;
-        BinIrInst bin;
-        CallIrInst call;
-        BranchIrInst branch;
-        CondIrInst cond;
+        GotoTerminator tgoto;
+        CondTerminator cond;
     };
 };
 
 struct BasicBlock {
     BlockId id;
-
-    IrInst *start;
-    IrInst *end;
-    LList<BasicBlock *> exits;
+    Inst *start;
+    Inst *end;
+    Terminator *terminator;
 };
 
 struct IrContext {
