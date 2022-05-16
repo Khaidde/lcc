@@ -50,7 +50,7 @@ struct SparseSet {
 struct VariableRef {
     size_t varId;
     ValId *valLoc;
-    bool isDefNotUse;
+    bool isDef;
     VariableRef *nextRef;
 };
 
@@ -72,9 +72,8 @@ struct TranslationContext {
 
     LMap<LStringView, VariableInfo *, lstr_hash, lstr_equal> varMap;
     LList<VariableInfo *> varInfos;
-    SparseSet liveVarSet;
 
-    LList<VariableRefList> refs;  // Keep track of use and define for variable renaming
+    LList<VariableRefList> refs;  // Keep track of uses and definitions for ssa variable renaming
 };
 
 Inst *create_inst(InstKind kind) {
@@ -95,20 +94,20 @@ void add_inst(BasicBlock *block, Inst *inst) {
 
 static BasicBlock *succBuff[2];
 
-BasicBlock **get_successors(size_t &numSucc, BasicBlock *block) {
+BasicBlock **get_successors(size_t &outNumSucc, BasicBlock *block) {
     switch (block->terminator->kind) {
         case TerminatorKind::kGoto: {
             succBuff[0] = block->terminator->tgoto.target;
-            numSucc = 1;
+            outNumSucc = 1;
             return succBuff;
         }
         case TerminatorKind::kCond: {
             succBuff[0] = block->terminator->cond.then;
             succBuff[1] = block->terminator->cond.alt;
-            numSucc = 2;
+            outNumSucc = 2;
             return succBuff;
         }
-        case TerminatorKind::kRet: numSucc = 0; return 0;
+        case TerminatorKind::kRet: outNumSucc = 0; return 0;
     }
 }
 
@@ -151,46 +150,83 @@ BasicBlock *create_block(TranslationContext &tctx) {
 
 void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *block);
 
-ValId &translate_expr(TranslationContext &tctx, BasicBlock *curr, Node *expr) {
+ValId *translate_expr(TranslationContext &tctx, ValId *dest, BasicBlock *curr, Node *expr) {
     switch (expr->kind) {
         case NodeKind::kIntLit: {
             Inst *aconst = create_inst(InstKind::kConst);
             aconst->aconst.intVal = expr->intLit.intVal;
             add_inst(curr, aconst);
             mem::p_free(expr);
-            return aconst->aconst.dest = tctx.valCnt++;
+            *dest = aconst->aconst.dest = tctx.valCnt++;
+            return &aconst->aconst.dest;
         }
         case NodeKind::kName: {
             if (expr->name.ref->decl.isAssignToGlobal) {
                 todo("Use of global variable '%s'\n", lstr_raw_str(expr->name.ident));
                 assert(false);
             }
-            Inst *usage = create_inst(InstKind::kUsage);
             VariableRef *varRef = create_variable_reference(tctx, curr->id);
             varRef->varId = (*tctx.varMap.get(expr->name.ident))->varId;
-            varRef->valLoc = &usage->usage.useId;
-            varRef->isDefNotUse = false;
-            add_inst(curr, usage);
+            varRef->valLoc = dest;
+            varRef->isDef = false;
             mem::p_free(expr);
-            return usage->usage.dest = tctx.valCnt++;
+            return nullptr;
         }
         case NodeKind::kInfix: {
             Inst *bin = create_inst(InstKind::kBin);
             bin->bin.op = expr->infix.op;
-            bin->bin.left = translate_expr(tctx, curr, expr->infix.left);
-            bin->bin.right = translate_expr(tctx, curr, expr->infix.right);
+            translate_expr(tctx, &bin->bin.left, curr, expr->infix.left);
+            translate_expr(tctx, &bin->bin.right, curr, expr->infix.right);
             add_inst(curr, bin);
             mem::p_free(expr);
-            return bin->bin.dest = tctx.valCnt++;
+            *dest = bin->bin.dest = tctx.valCnt++;
+            return &bin->bin.dest;
         }
         default: assert(false && "TODO: no translation implemented for expression kind"); unreachable();
+    }
+}
+
+void translate_decl(TranslationContext &tctx, BasicBlock *curr, Node *decl) {
+    if (decl->decl.lval->kind == NodeKind::kName && decl->decl.rval) {
+        VariableInfo *varInfo;
+        if (VariableInfo **varInfoRef = tctx.varMap.get(decl->decl.lval->name.ident)) {
+            varInfo = *varInfoRef;
+            LList<BlockId> &defSites = varInfo->defSites;
+            // Ensure no duplicates before adding to definition sites
+            if (!defSites.size || defSites.last() != curr->id) {
+                defSites.add(curr->id);
+            }
+        } else {
+            varInfo = mem::malloc<VariableInfo>();
+            varInfo->varId = tctx.varMap.size;
+            varInfo->defSites = {};
+            varInfo->idStack = {};
+            varInfo->defSites.add(curr->id);
+            tctx.varMap.try_put(decl->decl.lval->name.ident, varInfo);
+            tctx.varInfos.add(varInfo);
+        }
+        ValId *valLoc;
+        if (decl->decl.rval->kind == NodeKind::kName) {
+            Inst *assign = create_inst(InstKind::kAssign);
+            add_inst(curr, assign);
+            translate_expr(tctx, &assign->assign.assignId, curr, decl->decl.rval);
+            assign->assign.dest = tctx.valCnt++;
+            valLoc = &assign->assign.dest;
+        } else {
+            ValId temp;
+            valLoc = translate_expr(tctx, &temp, curr, decl->decl.rval);
+        }
+        VariableRef *varRef = create_variable_reference(tctx, curr->id);
+        varRef->varId = varInfo->varId;
+        varRef->valLoc = valLoc;
+        varRef->isDef = true;
     }
 }
 
 void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
     for (;;) {
         entry->terminator = create_terminator(TerminatorKind::kCond);
-        entry->terminator->cond.predicate = translate_expr(tctx, entry, ifstmt->ifstmt.cond);
+        translate_expr(tctx, &entry->terminator->cond.predicate, entry, ifstmt->ifstmt.cond);
 
         BasicBlock *then = create_block(tctx);
         entry->terminator->cond.then = then;
@@ -215,7 +251,7 @@ void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit,
 void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
     entry->terminator = create_terminator(TerminatorKind::kCond);
     entry->terminator->cond.alt = exit;
-    entry->terminator->cond.predicate = translate_expr(tctx, entry, whilestmt->whilestmt.cond);
+    translate_expr(tctx, &entry->terminator->cond.predicate, entry, whilestmt->whilestmt.cond);
 
     // Goto targets for break and continue statements
     whilestmt->whilestmt.info->entry = entry;
@@ -237,30 +273,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
         Node *stmt = stmtNode->stmt;
         switch (stmt->kind) {
             case NodeKind::kDecl: {
-                if (stmt->decl.lval->kind == NodeKind::kName) {
-                    VariableInfo *varInfo;
-                    if (VariableInfo **varInfoRef = tctx.varMap.get(stmt->decl.lval->name.ident)) {
-                        varInfo = *varInfoRef;
-                        LList<BlockId> &defSites = varInfo->defSites;
-                        // Ensure no duplicates before addition
-                        if (!defSites.size || defSites.last() != curr->id) {
-                            defSites.add(curr->id);
-                        }
-                    } else {
-                        varInfo = mem::malloc<VariableInfo>();
-                        varInfo->varId = tctx.varMap.size;
-                        varInfo->defSites = {};
-                        varInfo->idStack = {};
-                        varInfo->defSites.add(curr->id);
-                        tctx.varMap.try_put(stmt->decl.lval->name.ident, varInfo);
-                        tctx.varInfos.add(varInfo);
-                    }
-                    ValId *valLoc = &translate_expr(tctx, curr, stmt->decl.rval);
-                    VariableRef *varRef = create_variable_reference(tctx, curr->id);
-                    varRef->varId = varInfo->varId;
-                    varRef->valLoc = valLoc;
-                    varRef->isDefNotUse = true;
-                }
+                translate_decl(tctx, curr, stmt);
                 break;
             }
             case NodeKind::kIf: {
@@ -387,15 +400,16 @@ void rename_block(TranslationContext &tctx, BasicBlock *curr) {
         VariableRef *currRef = tctx.refs.get(curr->id).start;
         while (currRef) {
             VariableInfo *varInfo = tctx.varInfos.get(currRef->varId);
-            if (currRef->isDefNotUse) {
+            if (currRef->isDef) {
                 varInfo->idStack.add(*currRef->valLoc);
                 numDefs[varInfo->varId]++;
             } else {
                 *currRef->valLoc = varInfo->idStack.last();
             }
-            currRef = currRef->nextRef;
+            VariableRef *next = currRef->nextRef;
+            mem::p_free(currRef);
+            currRef = next;
         }
-        mem::p_free(currRef);
     }
 
     // Add joins to phi nodes
@@ -584,13 +598,15 @@ BasicBlock *translate_function_body(Node *functionBody) {
             }
         }
     }
+    mem::c_free(philist.dense);
+    mem::c_free(philist.sparse);
+    mem::c_free(worklist.dense);
+    mem::c_free(worklist.sparse);
 
-    // Translation
-    tctx.liveVarSet.init(tctx.varMap.size, tctx.varMap.size);
+    // Variable renaming
     rename_block(tctx, entry);
+    mem::c_free(tctx.refs.data);
 
-    mem::c_free(tctx.liveVarSet.dense);
-    mem::c_free(tctx.liveVarSet.sparse);
     // Free data structures
     for (size_t i = 0; i < numNodes; i++) {
         mem::c_free(pred[i].data);
@@ -622,7 +638,7 @@ void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
                 printf(")\n");
                 break;
             case InstKind::kConst: printf("  v%d = %d\n", inst->aconst.dest, inst->aconst.intVal); break;
-            case InstKind::kUsage: printf("  v%d = v%d\n", inst->usage.dest, inst->usage.useId); break;
+            case InstKind::kAssign: printf("  v%d = v%d\n", inst->assign.dest, inst->assign.assignId); break;
             case InstKind::kBin:
                 const char *opstr;
                 switch (inst->bin.op) {

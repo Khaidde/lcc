@@ -15,7 +15,7 @@ using ValId = size_t;
 enum class InstKind {
     kPhi,
     kConst,
-    kUsage,
+    kAssign,
     kBin,
     kCall,
 };
@@ -31,9 +31,9 @@ struct ConstInst {
     uint16_t intVal;
 };
 
-struct UsageInst {
+struct AssignInst {
     ValId dest;
-    ValId useId;
+    ValId assignId;
 };
 
 struct BinInst {
@@ -56,7 +56,7 @@ struct Inst {
     union {
         PhiInst phi;
         ConstInst aconst;
-        UsageInst usage;
+        AssignInst assign;
         BinInst bin;
         CallInst call;
     };

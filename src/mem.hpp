@@ -64,11 +64,10 @@ struct PoolAllocator {
     void deallocate(void *ptr) {
 #ifndef NDEBUG
         debug("Pfree %lld(n=%d)\n", kChunkSize, --numObjects);
-        // ((Chunk *)ptr)->metadata = 0xFEEEFEEE;
+        ((Chunk *)ptr)->metadata = 0xFEEEFEEE;
 #endif
-        (void)ptr;
-        // ((Chunk *)ptr)->next = head;
-        // head = (Chunk *)ptr;
+        ((Chunk *)ptr)->next = head;
+        head = (Chunk *)ptr;
     }
 
     static inline PoolAllocator<T> pallocator{};
@@ -80,42 +79,42 @@ struct PoolAllocator {
 #endif
 };
 
-template <class T>
+template <typename T>
 static inline T *p_malloc() {
     return (T *)PoolAllocator<T>::pallocator.allocate();
 }
 
-template <class T>
+template <typename T>
 static inline void p_free(T *ptr) {
     PoolAllocator<T>::pallocator.deallocate((void *)ptr);
 }
 
-template <class T>
+template <typename T>
 static inline T *malloc() {
     return (T *)allocator.malloc(sizeof(T));
 }
 
-template <class T>
+template <typename T>
 static inline T *malloc(size_t count) {
     return (T *)allocator.malloc(sizeof(T) * count);
 }
 
-template <class T>
+template <typename T>
 static inline T *realloc(void *ptr, size_t prevCount, size_t newCount) {
     return (T *)allocator.realloc(ptr, sizeof(T) * prevCount, sizeof(T) * newCount);
 }
 
-template <class T>
+template <typename T>
 static inline T *c_malloc() {
     return (T *)::malloc(sizeof(T));
 }
 
-template <class T>
+template <typename T>
 static inline T *c_malloc(size_t count) {
     return (T *)::malloc(sizeof(T) * count);
 }
 
-template <class T>
+template <typename T>
 static inline T *c_realloc(void *ptr, size_t newCount) {
     return (T *)::realloc(ptr, sizeof(T) * newCount);
 }
