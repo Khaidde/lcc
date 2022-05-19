@@ -11,42 +11,6 @@ namespace {
 
 namespace ssa {
 
-struct SparseSet {
-    void init(size_t capacity, size_t valLim) {
-        dense = mem::c_malloc<size_t>(capacity);
-        sparse = mem::c_malloc<size_t>(valLim);
-        size = 0;
-#ifndef NDEBUG
-        this->capacity = capacity;
-        this->valLim = valLim;
-#endif
-    }
-    void clear() { size = 0; }
-    bool try_add(size_t val) {
-        assert(val < valLim);
-        if (contains(val)) return false;
-        dense[size] = val;
-        sparse[val] = size++;
-        return true;
-    }
-    size_t pop() {
-        assert(size > 0);
-        return dense[--size];
-    }
-    bool contains(size_t val) {
-        assert(val < valLim);
-        size_t s = sparse[val];
-        return s < size && dense[s] == val;
-    }
-    size_t *dense;
-    size_t *sparse;
-    size_t size;
-#ifndef NDEBUG
-    size_t capacity;  // size of dense list
-    size_t valLim;    // size of sparse list
-#endif
-};
-
 struct VariableRef {
     size_t varId;
     ValId *valLoc;
@@ -65,10 +29,41 @@ struct VariableInfo {
     LList<ValId> idStack;
 };
 
+struct CFG {
+    size_t numBlocks{0};
+    BasicBlock *entry;
+    BasicBlock **map;
+
+    LList<BasicBlock *> *pred;
+
+    BasicBlock **rpo;
+    BasicBlock **idom;
+};
+
+ListIterator<BasicBlock *> rpo_begin(CFG &cfg) { return {&cfg.rpo[0]}; }
+
+ListIterator<BasicBlock *> rpo_end(CFG &cfg) { return {&cfg.rpo[cfg.numBlocks]}; }
+
+ListIterator<BasicBlock *> pred_begin(CFG &cfg, BasicBlock *block) { return {&cfg.pred[block->id].data[0]}; }
+
+ListIterator<BasicBlock *> pred_end(CFG &cfg, BasicBlock *block) {
+    return {&cfg.pred[block->id].data[cfg.pred[block->id].size]};
+}
+
+ListIterator<BasicBlock *> succ_begin(BasicBlock *block) { return {&block->term.succ[0]}; }
+
+ListIterator<BasicBlock *> succ_end(BasicBlock *block) {
+    switch (block->term.kind) {
+        case TerminatorKind::kCond: return {&block->term.succ[2]};
+        case TerminatorKind::kGoto: return {&block->term.succ[1]};
+        case TerminatorKind::kRet: return {&block->term.succ[0]};
+    }
+}
+
 struct TranslationContext {
-    BlockId blockCnt{0};
+    CFG cfg;
+
     ValId valCnt{0};
-    LList<BasicBlock *> *dominators;
 
     LMap<LStringView, VariableInfo *, lstr_hash, lstr_equal> varMap;
     LList<VariableInfo *> varInfos;
@@ -92,39 +87,6 @@ void add_inst(BasicBlock *block, Inst *inst) {
     block->end = inst;
 }
 
-static BasicBlock *succBuff[2];
-
-BasicBlock **get_successors(size_t &outNumSucc, BasicBlock *block) {
-    switch (block->terminator->kind) {
-        case TerminatorKind::kGoto: {
-            succBuff[0] = block->terminator->tgoto.target;
-            outNumSucc = 1;
-            return succBuff;
-        }
-        case TerminatorKind::kCond: {
-            succBuff[0] = block->terminator->cond.then;
-            succBuff[1] = block->terminator->cond.alt;
-            outNumSucc = 2;
-            return succBuff;
-        }
-        case TerminatorKind::kRet: outNumSucc = 0; return 0;
-    }
-}
-
-Terminator *create_terminator(TerminatorKind kind) {
-    Terminator *terminator = mem::malloc<Terminator>();
-    terminator->kind = kind;
-    return terminator;
-}
-
-BasicBlock *create_block() {
-    BasicBlock *block = mem::malloc<BasicBlock>();
-    block->start = nullptr;
-    block->end = nullptr;
-    block->terminator = nullptr;
-    return block;
-}
-
 VariableRef *create_variable_reference(TranslationContext &tctx, BlockId blockId) {
     while (tctx.refs.size <= blockId) {
         tctx.refs.add({nullptr, nullptr});
@@ -142,9 +104,16 @@ VariableRef *create_variable_reference(TranslationContext &tctx, BlockId blockId
     return newRef;
 }
 
+BasicBlock *create_block() {
+    BasicBlock *block = mem::malloc<BasicBlock>();
+    block->start = nullptr;
+    block->end = nullptr;
+    return block;
+}
+
 BasicBlock *create_block(TranslationContext &tctx) {
     BasicBlock *block = create_block();
-    block->id = tctx.blockCnt++;
+    block->id = tctx.cfg.numBlocks++;
     return block;
 }
 
@@ -225,19 +194,19 @@ void translate_decl(TranslationContext &tctx, BasicBlock *curr, Node *decl) {
 
 void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
     for (;;) {
-        entry->terminator = create_terminator(TerminatorKind::kCond);
-        translate_expr(tctx, &entry->terminator->cond.predicate, entry, ifstmt->ifstmt.cond);
+        entry->term.kind = TerminatorKind::kCond;
+        translate_expr(tctx, &entry->term.predicate, entry, ifstmt->ifstmt.cond);
 
         BasicBlock *then = create_block(tctx);
-        entry->terminator->cond.then = then;
+        entry->term.cond.then = then;
         translate_block(tctx, then, exit, ifstmt->ifstmt.then);
 
         if (!ifstmt->ifstmt.alt) {
-            entry->terminator->cond.alt = exit;
+            entry->term.cond.alt = exit;
             return;
         }
         BasicBlock *alt = create_block(tctx);
-        entry->terminator->cond.alt = alt;
+        entry->term.cond.alt = alt;
         if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
             translate_block(tctx, alt, exit, ifstmt->ifstmt.alt);
             return;
@@ -249,19 +218,19 @@ void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit,
 }
 
 void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
-    entry->terminator = create_terminator(TerminatorKind::kCond);
-    entry->terminator->cond.alt = exit;
-    translate_expr(tctx, &entry->terminator->cond.predicate, entry, whilestmt->whilestmt.cond);
+    entry->term.kind = TerminatorKind::kCond;
+    entry->term.cond.alt = exit;
+    translate_expr(tctx, &entry->term.predicate, entry, whilestmt->whilestmt.cond);
 
     // Goto targets for break and continue statements
     whilestmt->whilestmt.info->entry = entry;
     whilestmt->whilestmt.info->exit = exit;
 
     BasicBlock *loop = create_block(tctx);
-    entry->terminator->cond.then = loop;
+    entry->term.cond.then = loop;
 
-    loop->terminator = create_terminator(TerminatorKind::kGoto);
-    loop->terminator->tgoto.target = entry;
+    loop->term.kind = TerminatorKind::kGoto;
+    loop->term.tgoto.target = entry;
 
     translate_block(tctx, loop, entry, whilestmt->whilestmt.loop);
 }
@@ -280,7 +249,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
                 if (stmtNode->next) {
                     BasicBlock *ifExit = create_block();
                     translate_if(tctx, curr, ifExit, stmt);
-                    ifExit->id = tctx.blockCnt++;
+                    ifExit->id = tctx.cfg.numBlocks++;
                     curr = ifExit;
                     break;
                 } else {
@@ -292,14 +261,14 @@ void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
             case NodeKind::kWhile: {
                 if (curr->start) {
                     BasicBlock *cond = create_block(tctx);
-                    curr->terminator = create_terminator(TerminatorKind::kGoto);
-                    curr->terminator->tgoto.target = cond;
+                    curr->term.kind = TerminatorKind::kGoto;
+                    curr->term.tgoto.target = cond;
                     curr = cond;
                 }
                 if (stmtNode->next) {
                     BasicBlock *whileExit = create_block();
                     translate_while(tctx, curr, whileExit, stmt);
-                    whileExit->id = tctx.blockCnt++;
+                    whileExit->id = tctx.cfg.numBlocks++;
                     curr = whileExit;
                     break;
                 } else {
@@ -309,80 +278,105 @@ void translate_block(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
                 break;
             }
             case NodeKind::kLoopBr: {
-                curr->terminator = create_terminator(TerminatorKind::kGoto);
+                curr->term.kind = TerminatorKind::kGoto;
                 if (stmt->loopbr.isBreak) {
-                    curr->terminator->tgoto.target = stmt->loopbr.ref->whilestmt.info->exit;
+                    curr->term.tgoto.target = stmt->loopbr.ref->whilestmt.info->exit;
                 } else {
-                    curr->terminator->tgoto.target = stmt->loopbr.ref->whilestmt.info->entry;
+                    curr->term.tgoto.target = stmt->loopbr.ref->whilestmt.info->entry;
                 }
                 return;
             }
             default: break;
         }
     }
-    curr->terminator = create_terminator(TerminatorKind::kGoto);
-    curr->terminator->tgoto.target = exit;
+    curr->term.kind = TerminatorKind::kGoto;
+    curr->term.tgoto.target = exit;
     mem::p_free(block);
 }
 
-struct DominatorForestContext {
-    size_t *ancestor;
-    size_t *label;
-    size_t *child;
-    size_t *size;
-};
+// Simple, Fast Dominance Algorithm
+// by Cooper et al.
+void init_dominator_tree(CFG &cfg) {
+    // post order numberings
+    size_t *po = mem::c_malloc<size_t>(cfg.numBlocks);
+    for (size_t p = 0; p < cfg.numBlocks; p++) {
+        po[cfg.rpo[p]->id] = p;
+    }
 
-void link(size_t *semi, DominatorForestContext &dfctx, size_t to, size_t from) {
-    size_t curr = from;
-    while (semi[dfctx.label[from]] < semi[dfctx.label[dfctx.child[curr]]]) {
-        size_t ch = dfctx.child[curr];
-        if (dfctx.size[curr] + dfctx.size[dfctx.child[ch]] >= dfctx.size[ch] << 1) {
-            dfctx.ancestor[ch] = curr;
-            dfctx.child[curr] = dfctx.child[ch];
-        } else {
-            dfctx.size[ch] = dfctx.size[curr];
-            dfctx.ancestor[curr] = ch;
-            curr = ch;
+    cfg.idom = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    for (size_t i = 0; i < cfg.numBlocks; i++) {
+        cfg.idom[i] = nullptr;
+    }
+    cfg.idom[0] = cfg.entry;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+
+        // For each basic block excluding entry node
+        for (auto bb = ++rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
+            BasicBlock *newIdom = nullptr;
+            for (auto pred = pred_begin(cfg, *bb), end = pred_end(cfg, *bb); pred != end; ++pred) {
+                if (cfg.idom[(*pred)->id] != nullptr) {
+                    if (newIdom) {
+                        // Calculate dominator set intersection between predecessor
+                        // and existing dominator set
+                        BasicBlock *b1 = *pred;
+                        BasicBlock *b2 = newIdom;
+                        while (b1 != b2) {
+                            while (po[b1->id] > po[b2->id]) {
+                                b1 = cfg.idom[b1->id];
+                            }
+                            while (po[b1->id] < po[b2->id]) {
+                                b2 = cfg.idom[b2->id];
+                            }
+                        }
+                        newIdom = b1;
+                    } else {
+                        newIdom = *pred;
+                    }
+                }
+            }
+            if (cfg.idom[(*bb)->id] != newIdom) {
+                cfg.idom[(*bb)->id] = newIdom;
+                changed = true;
+            }
         }
-    }
-    dfctx.label[curr] = dfctx.label[from];
-    dfctx.size[to] += dfctx.size[from];
-    if (dfctx.size[to] < dfctx.size[from] << 1) {
-        size_t temp = curr;
-        curr = dfctx.child[to];
-        dfctx.child[to] = temp;
-    }
-    while (curr) {
-        dfctx.ancestor[curr] = to;
-        curr = dfctx.child[curr];
     }
 }
 
-void compress(size_t *semi, DominatorForestContext &dfctx, size_t node) {
-    size_t ancest = dfctx.ancestor[node];
-    if (dfctx.ancestor[ancest]) {
-        compress(semi, dfctx, ancest);
-        if (semi[dfctx.label[ancest]] < semi[dfctx.label[node]]) {
-            dfctx.label[node] = dfctx.label[ancest];
+void dfs(CFG &cfg, BasicBlock *curr, size_t &toVisit, FixedBitField &visited) {
+    cfg.map[curr->id] = curr;
+    for (auto succ = succ_begin(curr), end = succ_end(curr); succ != end; ++succ) {
+        if (!visited.get((*succ)->id)) {
+            visited.set((*succ)->id);
+            dfs(cfg, *succ, toVisit, visited);
         }
-        dfctx.ancestor[node] = dfctx.ancestor[ancest];
+        cfg.pred[(*succ)->id].add(curr);
     }
+    cfg.rpo[--toVisit] = curr;
 }
 
-size_t eval(size_t *semi, DominatorForestContext &dfctx, size_t node) {
-    if (dfctx.ancestor[node]) {
-        compress(semi, dfctx, node);
-        size_t ancest = dfctx.ancestor[node];
-        if (semi[dfctx.label[ancest]] >= semi[dfctx.label[node]]) {
-            return dfctx.label[node];
-        } else {
-            return dfctx.label[ancest];
-        }
+void init_cfg(CFG &cfg) {
+    cfg.map = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    cfg.pred = mem::c_malloc<LList<BasicBlock *>>(cfg.numBlocks);
+    for (size_t i = 0; i < cfg.numBlocks; i++) {
+        cfg.pred[i] = {};
     }
-    return dfctx.label[node];
+    cfg.rpo = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+
+    // Note that entry block always reaches every other block
+    // so only one dfs call is needed
+    // Sets up id to block map, predecessor and rpo
+    FixedBitField visited;
+    visited.init(cfg.numBlocks);
+    size_t toVisit = cfg.numBlocks;
+    dfs(cfg, cfg.entry, toVisit, visited);
+    visited.destroy();
+
+    init_dominator_tree(cfg);
 }
 
-void rename_block(TranslationContext &tctx, BasicBlock *curr) {
+void rename_block(TranslationContext &tctx, LList<BasicBlock *> *&dominates, BasicBlock *curr) {
     size_t *numDefs = mem::c_malloc<size_t>(tctx.varMap.size);
     for (size_t i = 0; i < tctx.varMap.size; i++) {
         numDefs[i] = 0;
@@ -413,20 +407,21 @@ void rename_block(TranslationContext &tctx, BasicBlock *curr) {
     }
 
     // Add joins to phi nodes
-    size_t numSucc;
-    BasicBlock **succ = get_successors(numSucc, curr);
-    for (size_t i = 0; i < numSucc; i++) {
-        Inst *phi = succ[i]->start;
+    for (auto succ = succ_begin(curr), end = succ_end(curr); succ != end; ++succ) {
+        Inst *phi = (*succ)->start;
         while (phi && phi->kind == InstKind::kPhi) {
             VariableInfo *varInfo = tctx.varInfos.get(phi->phi.varId);
             phi->phi.joins.add(varInfo->idStack.last());
             phi = phi->next;
         }
     }
+
     // Translate dominator children
-    for (size_t i = 0; i < tctx.dominators[curr->id + 1].size; i++) {
-        rename_block(tctx, tctx.dominators[curr->id + 1].get(i));
+    // TODO: figure out if this can be done using rpo iteration
+    for (size_t i = 0; i < dominates[curr->id].size; i++) {
+        rename_block(tctx, dominates, dominates[curr->id].get(i));
     }
+
     // Pop id stack for each variable
     for (size_t i = 0; i < tctx.varMap.size; i++) {
         tctx.varInfos.get(i)->idStack.size -= numDefs[i];
@@ -436,164 +431,65 @@ void rename_block(TranslationContext &tctx, BasicBlock *curr) {
 
 BasicBlock *translate_function_body(Node *functionBody) {
     TranslationContext tctx{};
+    CFG &cfg = tctx.cfg;
     tctx.varMap.init();
-    BasicBlock *entry = create_block(tctx);
+
+    // Translate function body into control flow graph
+    cfg.entry = create_block(tctx);
     BasicBlock *exit = create_block();
-    translate_block(tctx, entry, exit, functionBody);
-    exit->id = tctx.blockCnt++;
-    exit->terminator = create_terminator(TerminatorKind::kRet);
+    translate_block(tctx, cfg.entry, exit, functionBody);
+    exit->id = cfg.numBlocks++;
+    exit->term.kind = TerminatorKind::kRet;
 
-    // Fast dominator algorithm by Lengauer and Tarjan
-    // Uses the "sophisticated" eval and link methods
-    // Allocate memory for data structures
-    size_t numNodes = tctx.blockCnt + 1;
-    size_t arenaSize = sizeof(BasicBlock *) * numNodes;
-    arenaSize += sizeof(size_t) * numNodes * 8;
-    arenaSize += sizeof(LList<size_t>) * numNodes * 2;
-    arenaSize += sizeof(LList<BasicBlock *>) * numNodes;
-    void *arena = mem::c_malloc<int8_t>(arenaSize);
-    BasicBlock **blocks = (BasicBlock **)arena;
-    arena = &blocks[numNodes];
-    size_t *idom = (size_t *)arena;
-    arena = &idom[numNodes];
-    size_t *vertex = (size_t *)arena;
-    arena = &vertex[numNodes];
-    size_t *semi = (size_t *)arena;
-    arena = &semi[numNodes];
-    size_t *parent = (size_t *)arena;
-    arena = &parent[numNodes];
-    DominatorForestContext dfctx;
-    dfctx.ancestor = (size_t *)arena;
-    arena = &dfctx.ancestor[numNodes];
-    dfctx.label = (size_t *)arena;
-    arena = &dfctx.label[numNodes];
-    dfctx.child = (size_t *)arena;
-    arena = &dfctx.child[numNodes];
-    dfctx.size = (size_t *)arena;
-    arena = &dfctx.size[numNodes];
-    LList<size_t> *pred = (LList<size_t> *)arena;
-    arena = &pred[numNodes];
-    LList<size_t> *bucket = (LList<size_t> *)arena;
-    arena = &bucket[numNodes];
-    tctx.dominators = (LList<BasicBlock *> *)arena;
-    arena = &tctx.dominators[numNodes];
-
-    // Initialize data structures
-    for (size_t i = 0; i < numNodes; i++) {
-        semi[i] = 0;
-        dfctx.ancestor[i] = 0;
-        dfctx.child[i] = 0;
-        dfctx.size[i] = 1;
-        pred[i] = {};
-        bucket[i] = {};
-        tctx.dominators[i] = {};
-    }
-    blocks[0] = nullptr;
-    idom[0] = 0;
-    idom[entry->id + 1] = 0;
-    vertex[0] = 0;
-    dfctx.label[0] = 0;
-    dfctx.size[0] = 0;
-
-    // Iterative DFS numbering
-    LList<BasicBlock *> stack = {};
-    stack.add(entry);
-    size_t cnt = 0;
-    while (stack.size) {
-        BasicBlock *top = stack.get(stack.size - 1);
-        stack.size--;
-        size_t tn = top->id + 1;
-        assert(tn < numNodes);
-        if (semi[tn]) continue;
-        semi[tn] = ++cnt;
-        assert(cnt < numNodes);
-        blocks[tn] = top;
-        vertex[cnt] = dfctx.label[tn] = tn;
-
-        size_t numSucc;
-        BasicBlock **succ = get_successors(numSucc, top);
-        for (size_t i = 0; i < numSucc; i++) {
-            size_t pn = succ[i]->id + 1;
-            pred[pn].add(tn);
-            if (!semi[pn]) {
-                parent[pn] = tn;
-                stack.add(succ[i]);
-            }
-        }
-    }
-    for (size_t i = numNodes - 1; i >= 2; i--) {
-        // Compute semi-dominators
-        size_t currN = vertex[i];
-        for (size_t k = 0; k < pred[currN].size; k++) {
-            size_t sevaln = semi[eval(semi, dfctx, pred[currN].get(k))];
-            if (sevaln < semi[currN]) semi[currN] = sevaln;
-        }
-        bucket[vertex[semi[currN]]].add(currN);
-        link(semi, dfctx, parent[currN], currN);
-        // Implicitly define immediate dominator for each vertex
-        LList<size_t> &parenBucket = bucket[parent[currN]];
-        for (size_t k = 0; k < parenBucket.size; k++) {
-            size_t vn = parenBucket.get(k);
-            size_t evaln = eval(semi, dfctx, vn);
-            idom[vn] = semi[evaln] < semi[vn] ? evaln : parent[currN];
-        }
-        parenBucket.size = 0;
-    }
-
-    // Explicitly define immediate dominators
-    for (size_t i = 2; i < numNodes; i++) {
-        size_t wn = vertex[i];
-        if (idom[wn] != vertex[semi[wn]]) idom[wn] = idom[idom[wn]];
-        tctx.dominators[idom[wn]].add(blocks[wn]);
-    }
+    init_cfg(cfg);
 
     // Simple Dominance Frontier algorithm by Cooper et al.
-    SparseSet *domFronts = mem::c_malloc<SparseSet>(numNodes);
-    for (size_t i = 0; i < numNodes; i++) {
-        domFronts[i].init(numNodes, numNodes);
+    SparseSet *domf = mem::c_malloc<SparseSet>(cfg.numBlocks);
+    for (size_t i = 0; i < cfg.numBlocks; i++) {
+        domf[i].init(cfg.numBlocks);
     }
-    for (size_t i = 1; i < numNodes; i++) {
-        size_t n = vertex[i];
-        if (pred[n].size <= 1) continue;
-        for (size_t p = 0; p < pred[n].size; p++) {
-            size_t runner = pred[n].get(p);
-            while (runner != idom[n]) {
-                domFronts[runner].try_add(n);
-                runner = idom[runner];
+    for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
+        if (cfg.pred[(*bb)->id].size >= 2) {
+            for (auto pred = pred_begin(cfg, *bb), end = pred_end(cfg, *bb); pred != end; ++pred) {
+                BasicBlock *runner = *pred;
+                while (runner != cfg.idom[(*bb)->id]) {
+                    domf[runner->id].try_add((*bb)->id);
+                    runner = cfg.idom[runner->id];
+                }
             }
         }
     }
 
     // Iterated dominance-frontier and phi node insertion
     SparseSet philist;
-    philist.init(numNodes, numNodes);
+    philist.init(cfg.numBlocks);
     SparseSet worklist;
-    worklist.init(numNodes, numNodes);
+    worklist.init(cfg.numBlocks);
     for (size_t i = 0; i < tctx.varInfos.size; i++) {
         worklist.clear();
         philist.clear();
         VariableInfo *var = tctx.varInfos.get(i);
         for (size_t k = 0; k < var->defSites.size; k++) {
-            worklist.try_add(var->defSites.get(k) + 1);
+            worklist.try_add(var->defSites.get(k));
         }
         while (worklist.size) {
-            size_t def = worklist.pop();
-            for (size_t k = 0; k < domFronts[def].size; k++) {
-                size_t dfy = domFronts[def].dense[k];
-                if (!philist.contains(dfy)) {
+            BlockId def = worklist.pop();
+            for (size_t k = 0; k < domf[def].size; k++) {
+                BlockId dfb = domf[def].dense[k];
+                if (!philist.contains(dfb)) {
                     Inst *phi = create_inst(InstKind::kPhi);
                     phi->phi.varId = var->varId;
                     phi->phi.dest = tctx.valCnt++;
-                    phi->phi.joins.init(pred[dfy].size);
+                    phi->phi.joins.init(cfg.pred[dfb].size);
 
-                    phi->next = blocks[dfy]->start;
-                    blocks[dfy]->start = phi;
+                    phi->next = cfg.map[dfb]->start;
+                    cfg.map[dfb]->start = phi;
 
-                    philist.try_add(dfy);
+                    philist.try_add(dfb);
 
                     // TODO: optimization where a node shouldn't be added if
                     // the variable is already defined there
-                    if (dfy != def) worklist.try_add(dfy);
+                    if (dfb != def) worklist.try_add(dfb);
                 }
             }
         }
@@ -602,22 +498,29 @@ BasicBlock *translate_function_body(Node *functionBody) {
     mem::c_free(philist.sparse);
     mem::c_free(worklist.dense);
     mem::c_free(worklist.sparse);
+    for (size_t i = 0; i < cfg.numBlocks; i++) {
+        mem::c_free(domf[i].dense);
+        mem::c_free(domf[i].sparse);
+    }
 
     // Variable renaming
-    rename_block(tctx, entry);
+    LList<BasicBlock *> *dominates = mem::c_malloc<LList<BasicBlock *>>(cfg.numBlocks);
+    for (size_t i = 0; i < cfg.numBlocks; i++) {
+        dominates[i].init(cfg.numBlocks);
+    }
+    for (auto bb = ++rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
+        dominates[cfg.idom[(*bb)->id]->id].add(*bb);
+    }
+    rename_block(tctx, dominates, cfg.entry);
+    for (size_t i = 0; i < cfg.numBlocks; i++) {
+        mem::c_free(dominates[i].data);
+    }
     mem::c_free(tctx.refs.data);
 
-    // Free data structures
-    for (size_t i = 0; i < numNodes; i++) {
-        mem::c_free(pred[i].data);
-        mem::c_free(bucket[i].data);
-        mem::c_free(tctx.dominators[i].data);
-    }
-    mem::c_free((void *)((int8_t *)arena - arenaSize));
     // TODO: free all the VariableInfo * inside the map
     mem::c_free(tctx.varMap.table);
     mem::p_free(functionBody);
-    return entry;
+    return cfg.entry;
 }
 
 }  // namespace ssa
@@ -652,17 +555,17 @@ void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
         inst = inst->next;
     }
     bid++;
-    switch (basicBlock->terminator->kind) {
+    switch (basicBlock->term.kind) {
         case TerminatorKind::kGoto: {
-            BasicBlock *exit = basicBlock->terminator->tgoto.target;
+            BasicBlock *exit = basicBlock->term.tgoto.target;
             printf("  goto b%d\n", exit->id);
             if (bid == exit->id) r_print_block(bid, exit);
             break;
         }
         case TerminatorKind::kCond: {
-            BasicBlock *then = basicBlock->terminator->cond.then;
-            BasicBlock *alt = basicBlock->terminator->cond.alt;
-            printf("  if v%d -> b%d b%d\n", basicBlock->terminator->cond.predicate, then->id, alt->id);
+            BasicBlock *then = basicBlock->term.cond.then;
+            BasicBlock *alt = basicBlock->term.cond.alt;
+            printf("  if v%d -> b%d b%d\n", basicBlock->term.predicate, then->id, alt->id);
 
             if (bid == then->id) r_print_block(bid, then);
             if (bid == alt->id) r_print_block(bid, alt);

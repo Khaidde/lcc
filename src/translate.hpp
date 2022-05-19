@@ -73,16 +73,18 @@ struct GotoTerminator {
 };
 
 struct CondTerminator {
-    ValId predicate;
     BasicBlock *then;
     BasicBlock *alt;
 };
 
 struct Terminator {
     TerminatorKind kind;
+    ValId predicate;  // Only relevant for conditional terminator
+
     union {
         GotoTerminator tgoto;
         CondTerminator cond;
+        BasicBlock *succ[2];
     };
 };
 
@@ -90,7 +92,7 @@ struct BasicBlock {
     BlockId id;
     Inst *start;
     Inst *end;
-    Terminator *terminator;
+    Terminator term;
 };
 
 struct IrContext {

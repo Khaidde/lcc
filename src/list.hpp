@@ -9,6 +9,102 @@
 namespace lcc {
 
 template <typename T>
+struct ListIterator {
+    T operator*() const { return *curr; }
+
+    ListIterator &operator++() {
+        ++curr;
+        return *this;
+    }
+
+    friend bool operator!=(const ListIterator &a, const ListIterator &b) { return a.curr != b.curr; }
+
+    T *curr;
+};
+
+struct FixedBitField {
+    void init(size_t capacity) {
+        this->capacity = capacity;
+        if (capacity <= 64) {
+            data = (uint8_t *)&smallData;
+            smallData = 0;
+        } else {
+            data = mem::c_malloc<uint8_t>(capacity >> 2);
+            for (size_t i = 0; i < (capacity >> 2); i++) {
+                data[i] = 0;
+            }
+        }
+    }
+
+    void destroy() {
+        if (capacity > 64) mem::c_free(data);
+    }
+
+    void set(size_t i) {
+        assert(i < capacity);
+        data[i >> 2] |= 1 << (i & 0x7);
+    }
+
+    void clear(size_t i) {
+        assert(i < capacity);
+        data[i >> 2] &= ~((uint8_t)(1 << (i & 0x7)));
+    }
+
+    bool get(size_t i) {
+        assert(i < capacity);
+        return data[i >> 2] & (1 << (i & 0x7));
+    }
+#ifndef NDEBUG
+    size_t capacity;
+#endif
+    uint64_t smallData;
+    uint8_t *data;
+};
+
+struct SparseSet {
+    void init(size_t capacity) { init(capacity, capacity); }
+
+    void init(size_t capacity, size_t valLim) {
+        dense = mem::c_malloc<size_t>(capacity);
+        sparse = mem::c_malloc<size_t>(valLim);
+        size = 0;
+#ifndef NDEBUG
+        this->capacity = capacity;
+        this->valLim = valLim;
+#endif
+    }
+
+    void clear() { size = 0; }
+
+    bool try_add(size_t val) {
+        assert(val < valLim);
+        if (contains(val)) return false;
+        dense[size] = val;
+        sparse[val] = size++;
+        return true;
+    }
+
+    size_t pop() {
+        assert(size > 0);
+        return dense[--size];
+    }
+
+    bool contains(size_t val) {
+        assert(val < valLim);
+        size_t s = sparse[val];
+        return s < size && dense[s] == val;
+    }
+
+    size_t *dense;
+    size_t *sparse;
+    size_t size;
+#ifndef NDEBUG
+    size_t capacity;  // size of dense list
+    size_t valLim;    // size of sparse list
+#endif
+};
+
+template <typename T>
 struct LList {
     void init(size_t initialSize) {
         assert(initialSize && "Initial size of list must be positive");
@@ -48,6 +144,8 @@ struct LList {
         ensure_capacity(size + 1);
         data[size++] = item;
     }
+
+    T remove() { return data[--size]; }
 
     T &get(size_t i) {
         assert(0 <= i && i < size);
