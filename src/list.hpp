@@ -50,10 +50,11 @@ struct FixedBitField {
         data[i >> 2] &= ~((uint8_t)(1 << (i & 0x7)));
     }
 
-    bool get(size_t i) {
+    bool operator[](size_t i) {
         assert(i < capacity);
         return data[i >> 2] & (1 << (i & 0x7));
     }
+
 #ifndef NDEBUG
     size_t capacity;
 #endif
@@ -147,7 +148,7 @@ struct LList {
 
     T remove() { return data[--size]; }
 
-    T &get(size_t i) {
+    T &operator[](size_t i) {
         assert(0 <= i && i < size);
         return data[i];
     }

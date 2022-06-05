@@ -33,7 +33,7 @@ const char *type_string(Type *type) {
         case TypeKind::kFuncTy: {
             LString res = lstr_create("(");
             for (size_t i = 0; i < type->funcTy.paramTys.size; i++) {
-                lstr_cat(res, type_string(type->funcTy.paramTys.get(i)));
+                lstr_cat(res, type_string(type->funcTy.paramTys[i]));
                 if (i + 1 < type->funcTy.paramTys.size) {
                     lstr_cat(res, ", ");
                 }
@@ -130,7 +130,7 @@ void r_print_ast(Node *node, size_t depth) {
 
             r_print_ast(node->call.callee, depth + 1);
             for (size_t i = 0; i < node->call.args.size; i++) {
-                r_print_ast(node->call.args.get(i), depth + 1);
+                r_print_ast(node->call.args[i], depth + 1);
             }
             break;
         case NodeKind::kFunc:
@@ -142,7 +142,7 @@ void r_print_ast(Node *node, size_t depth) {
             printf("\n");
 
             for (size_t i = 0; i < node->func.params.size; i++) {
-                r_print_ast(node->func.params.get(i), depth + 1);
+                r_print_ast(node->func.params[i], depth + 1);
             }
             r_print_ast(node->func.body, depth + 1);
             break;

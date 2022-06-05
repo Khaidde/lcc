@@ -40,11 +40,11 @@ DeclInfo *scope_bind(ScopeStack *stack, DeclInfo *declInfo) {
     }
 }
 
-Scope *scope_get(ScopeStack *stack) { return stack->scopes.get(stack->size - 1); }
+Scope *scope_get(ScopeStack *stack) { return stack->scopes[stack->size - 1]; }
 
 void scope_exit(ScopeStack *stack) {
     assert(stack->size);
-    mem::c_free(stack->scopes.get(--stack->size)->decls.table);
+    mem::c_free(stack->scopes[--stack->size]->decls.table);
 }
 
 }  // namespace lcc

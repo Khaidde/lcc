@@ -10,55 +10,67 @@ namespace lcc {
 struct BasicBlock;
 
 using BlockId = size_t;
-using ValId = size_t;
+using VReg = size_t;
+using VarId = size_t;
 
-enum class InstKind {
-    kPhi,
-    kConst,
-    kAssign,
-    kBin,
-    kCall,
+struct Inst;
+
+struct VarInfo {
+    VarId varid;
+    LList<BlockId> defSites;
+    LList<Inst *> defStack;
+};
+
+struct Opd {
+    enum Kind {
+        kReg,
+        kConst,
+    } kind;
+    union {
+        Inst *regVal;
+        uint16_t intval;
+    };
 };
 
 struct PhiInst {
-    size_t varId;
-    ValId dest;
-    LList<ValId> joins;
+    VarInfo *varInfo;
+
+    struct Arg {
+        Inst *ref;
+        BasicBlock *bb;
+    };
+    LList<Arg> joins;
 };
 
-struct ConstInst {
-    ValId dest;
-    uint16_t intVal;
+struct ArgInst {
+    size_t argNo;
 };
 
 struct AssignInst {
-    ValId dest;
-    ValId assignId;
+    Opd src;
 };
 
 struct BinInst {
-    ValId dest;
     TokenType op;
-    ValId left;
-    ValId right;
-};
-
-struct CallInst {
-    ValId dest;
-    // TODO: should also contain name of call
-    size_t cnt;
-    ValId *args;
+    Opd left;
+    Opd right;
 };
 
 struct Inst {
-    InstKind kind;
+    enum Kind {
+        kPhi,
+        kArg,
+        kAssign,
+        kBin,
+    } kind;
+
     Inst *next;
+    VReg dst;
     union {
         PhiInst phi;
-        ConstInst aconst;
+        ArgInst arg;
         AssignInst assign;
         BinInst bin;
-        CallInst call;
     };
 };
 
@@ -75,11 +87,11 @@ struct GotoTerminator {
 struct CondTerminator {
     BasicBlock *then;
     BasicBlock *alt;
+    Opd predicate;  // Only relevant for conditional terminator
 };
 
 struct Terminator {
     TerminatorKind kind;
-    ValId predicate;  // Only relevant for conditional terminator
 
     union {
         GotoTerminator tgoto;
@@ -90,82 +102,39 @@ struct Terminator {
 
 struct BasicBlock {
     BlockId id;
+    LList<BasicBlock *> pred;
     Inst *start;
     Inst *end;
     Terminator term;
 };
 
-struct IrContext {
-    // TODO: store a list of global constants
-    LList<BasicBlock *> basicBlocks{};
+struct CFG {
+    size_t numBlocks{0};
+    BasicBlock *entry;
+    BasicBlock *exit;
+    BasicBlock **map;
+
+    BasicBlock **rpo;
+    BasicBlock **idom;
 };
 
-void translate_package(Package *package);
+ListIterator<BasicBlock *> rpo_begin(CFG &cfg);
 
-/*
-add = :(a: u16, b: u16) -> string {
-  c := a + b
-  if c > 2 {
-    ret "g2"
-  } else {
-    if (c < 3) {
-       ret "l2"
-    }
-    c = 4
-  }
-  nop()
-  ret "none"
-}
+ListIterator<BasicBlock *> rpo_end(CFG &cfg);
 
-===>
+ListIterator<BasicBlock *> pred_begin(BasicBlock *block);
 
-constants [
-  0 = "g2"
-  1 = "l2"
-  2 = "none"
-]
+ListIterator<BasicBlock *> pred_end(BasicBlock *block);
 
-func0 {
-  debug a = v0
-  debug b = v1
-  // Return value stored in v2
-  debug c = v3
+ListIterator<BasicBlock *> succ_begin(BasicBlock *block);
 
-  b0 {
-    v0 = recv 2 // Receive 2 bytes for argument a
-    v1 = recv 2
-    v3 = v0 + v1 // c := a + b
-    v4 = v3 > 2
-    if v4 : b1 else b2
-  }
-  b1 {
-    v2 = constants[0]
-    br b5
-  }
-  b2 {
-    v5 = 3
-    v6 = v3 < 3
-    if v6 : b3 else b4
-  }
-  b3 {
-    v2 = constants[1]
-    br b6
-  }
-  b4 {
-    v3 = 4
-    // Implicit br b5
-  }
-  b5 {
-    v7 = nop()
-    v2 = constants[2]
-    // Implicit br b6
-  }
-  b6 {
-    ret
-  }
-}
+ListIterator<BasicBlock *> succ_end(BasicBlock *block);
 
- */
+void print_inst(Inst *inst);
+
+void print_cfg(CFG &cfg);
+
+void translate_function(CFG &cfg, Node *function);
 
 }  // namespace lcc
 

@@ -7,6 +7,7 @@
 #include "compilation.hpp"
 #include "diagnostic.hpp"
 #include "lstring.hpp"
+#include "optimize.hpp"
 #include "parse.hpp"
 #include "print.hpp"
 #include "scope.hpp"
@@ -173,7 +174,7 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
             declInfo->file = file;
 
             LStringView &declName = global->decl.lval->name.ident;
-            if (DeclInfo **preload = cmp.preloadPkg->globalDecls.get(declName)) {
+            if (DeclInfo **preload = cmp.preloadPkg->globalDecls[declName]) {
                 dx_err(at_node(file->finfo, global->decl.lval), "Declaration cannot have the name '%s'\n",
                        lstr_raw_str((*preload)->declNode->decl.lval->name.ident));
                 return ErrCode::kFailure;
@@ -226,14 +227,14 @@ CompilationContext preload(const char *preloadFilePath) {
     builtin_type::u16 = mem::malloc<Type>();
     builtin_type::u16->kind = TypeKind::kNamed;
     builtin_type::u16->name.ident = {"u16", 3};
-    DeclInfo **u16Ref = cmp.preloadPkg->globalDecls.get(builtin_type::u16->name.ident);
+    DeclInfo **u16Ref = cmp.preloadPkg->globalDecls[builtin_type::u16->name.ident];
     assert(u16Ref);
     builtin_type::u16->name.ref = (*u16Ref)->declNode;
 
     builtin_type::string = mem::malloc<Type>();
     builtin_type::string->kind = TypeKind::kNamed;
     builtin_type::string->name.ident = {"string", 6};
-    DeclInfo **stringRef = cmp.preloadPkg->globalDecls.get(builtin_type::string->name.ident);
+    DeclInfo **stringRef = cmp.preloadPkg->globalDecls[builtin_type::string->name.ident];
     assert(stringRef);
     builtin_type::string->name.ref = (*stringRef)->declNode;
 
@@ -274,7 +275,7 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
         ImportContext &importCtx = importStack.last();
         importStack.size--;
 
-        if (!cmp.packageMap.get(importCtx.importName)) {
+        if (!cmp.packageMap[importCtx.importName]) {
             // Look through all possible directories for package name
             rootDirBuf.size = rootDir.len + 1;
             join_path(rootDirBuf, importCtx.importName);
@@ -302,16 +303,16 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
                 File *file = mem::malloc<File>();
                 file->package = pkg;
                 pkg->files.add(file);
-                if (resolve_file(cmp, file, filenames.get(i).data) == ErrCode::kFailure) return ErrCode::kFailure;
+                if (resolve_file(cmp, file, filenames[i].data) == ErrCode::kFailure) return ErrCode::kFailure;
             }
 
             // Make sure package aliases don't confict with declaration names
             for (size_t i = 0; i < pkg->files.size; i++) {
-                File *file = pkg->files.get(i);
+                File *file = pkg->files[i];
                 Node *curr = file->importListHead;
                 while (curr) {
-                    if (!cmp.packageMap.get(curr->import.package)) importStack.add({file, curr->import.package});
-                    if (DeclInfo **declInfo = pkg->globalDecls.get(curr->import.alias)) {
+                    if (!cmp.packageMap[curr->import.package]) importStack.add({file, curr->import.package});
+                    if (DeclInfo **declInfo = pkg->globalDecls[curr->import.alias]) {
                         dx_err(at_node(file->finfo, curr),
                                "Package alias cannot have the same name as a declaration\n");
                         dx_note(at_node((*declInfo)->file->finfo, (*declInfo)->declNode), "Declaration found here\n");
@@ -356,20 +357,33 @@ ErrCode compile(const char *path) {
     if (resolve_packages(cmp, path) == ErrCode::kFailure) return ErrCode::kFailure;
 
     LStringView root{".", 1};
-    Package *pkg = *cmp.packageMap.get(root);
-    File *file = pkg->files.get(0);
+    Package *pkg = *cmp.packageMap[root];
+    File *file = pkg->files[0];
     info("Compiling %s ...\n", file->finfo->path);
 
     // Semantic analysis of the file
     cmp.currFile = file;
     if (analyze_package(&cmp, pkg)) return ErrCode::kFailure;
 
-    LList<DeclInfo *> &globalDecls = (*cmp.packageMap.get(root))->globalDeclList;
+    LList<DeclInfo *> &globalDecls = (*cmp.packageMap[root])->globalDeclList;
     for (size_t i = 0; i < globalDecls.size; i++) {
-        print_ast(globalDecls.get(i)->declNode);
+        print_ast(globalDecls[i]->declNode);
     }
 
-    translate_package((*cmp.packageMap.get(root)));
+    // Translation into cfg and intraprocedural optimizations
+    Package *package = *cmp.packageMap[root];
+    for (size_t i = 0; i < package->globalDeclList.size; i++) {
+        Node *decl = package->globalDeclList[i]->declNode;
+        if (decl->decl.rval->kind == NodeKind::kFunc) {
+            if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
+                CFG cfg;
+                translate_function(cfg, decl->decl.rval);
+                print_cfg(cfg);
+
+                optimize(cfg);
+            }
+        }
+    }
 
     return ErrCode::kSuccess;
 }

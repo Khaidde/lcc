@@ -18,7 +18,7 @@ Result analyze_block(CompilationContext *cmp, Node *block);
 Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
     scope_enter(cmp->scopeStack, func);
     for (size_t i = 0; i < func->func.params.size; i++) {
-        Node *param = func->func.params.get(i);
+        Node *param = func->func.params[i];
         DeclInfo *paramInfo = mem::malloc<DeclInfo>();
         paramInfo->isResolving = false;
         paramInfo->nextDecl = nullptr;
@@ -34,27 +34,27 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
 }
 
 Node *import_lookup(CompilationContext *cmp, LStringView &symbol) {
-    if (Node **import = cmp->currFile->imports.get(symbol)) {
+    if (Node **import = cmp->currFile->imports[symbol]) {
         return *import;
     }
     return nullptr;
 }
 
 DeclInfo *decl_lookup(CompilationContext *cmp, LStringView &symbol) {
-    if (DeclInfo **preloadDeclInfo = cmp->preloadPkg->globalDecls.get(symbol)) {
+    if (DeclInfo **preloadDeclInfo = cmp->preloadPkg->globalDecls[symbol]) {
         return *preloadDeclInfo;
     }
     if (cmp->scopeStack->size > 0) {
         for (size_t i = scope_depth(cmp->scopeStack);; i--) {
-            Scope *scope = cmp->scopeStack->scopes.get(i);
-            if (DeclInfo **declInfo = scope->decls.get(symbol)) {
+            Scope *scope = cmp->scopeStack->scopes[i];
+            if (DeclInfo **declInfo = scope->decls[symbol]) {
                 return *declInfo;
             }
             if (scope->owner->kind == NodeKind::kFunc) break;
             if (i == 0) break;
         }
     }
-    if (DeclInfo **globalDeclInfo = cmp->currFile->package->globalDecls.get(symbol)) {
+    if (DeclInfo **globalDeclInfo = cmp->currFile->package->globalDecls[symbol]) {
         return *globalDeclInfo;
     }
     return nullptr;
@@ -94,7 +94,7 @@ bool is_type_equal(Type *t1, Type *t2) {
             if (t1->funcTy.paramTys.size != t2->funcTy.paramTys.size) return false;
             if (!is_type_equal(t1->funcTy.retTy, t2->funcTy.retTy)) return false;
             for (size_t i = 0; i < t1->funcTy.paramTys.size; i++) {
-                if (!is_type_equal(t1->funcTy.paramTys.get(i), t2->funcTy.paramTys.get(i))) {
+                if (!is_type_equal(t1->funcTy.paramTys[i], t2->funcTy.paramTys[i])) {
                     return false;
                 }
             }
@@ -170,7 +170,7 @@ Result r_simplify_type_alias(CompilationContext *cmp, Node *src, Type *type) {
         case TypeKind::kPtr: r_simplify_type_alias(cmp, src, type->ptr.inner); break;
         case TypeKind::kFuncTy:
             for (size_t i = 0; i < type->funcTy.paramTys.size; i++) {
-                if (r_simplify_type_alias(cmp, src, type->funcTy.paramTys.get(i))) return kError;
+                if (r_simplify_type_alias(cmp, src, type->funcTy.paramTys[i])) return kError;
             }
             return r_simplify_type_alias(cmp, src, type->funcTy.retTy);
     }
@@ -212,8 +212,8 @@ DeclInfo *expand_dot_access(CompilationContext *cmp, Node *dotAccessRef) {
         todo("Dot access into declaration is not yet supported. See 'struct's when they're implemeneted :P\n");
         return nullptr;
     } else if (baseRef->kind == NodeKind::kImport) {
-        if (Package **pkg = cmp->packageMap.get(baseRef->import.package)) {
-            if (DeclInfo **declInfo = (*pkg)->globalDecls.get(dotAccessRef->infix.right->name.ident)) {
+        if (Package **pkg = cmp->packageMap[baseRef->import.package]) {
+            if (DeclInfo **declInfo = (*pkg)->globalDecls[dotAccessRef->infix.right->name.ident]) {
                 return *declInfo;
             } else {
                 dx_err(at_node(cmp->currFile->finfo, dotAccessRef->infix.right),
@@ -325,11 +325,11 @@ Type *resolve_call(CompilationContext *cmp, Node *call) {
         return nullptr;
     }
     for (size_t i = 0; i < ctype->funcTy.paramTys.size; i++) {
-        Type *argTy = resolve_type(cmp, call->call.args.get(i));
+        Type *argTy = resolve_type(cmp, call->call.args[i]);
         if (!argTy) return nullptr;
-        if (!is_type_equal(argTy, ctype->funcTy.paramTys.get(i))) {
-            dx_err(at_node(cmp->currFile->finfo, call->call.args.get(i)),
-                   "Argument expected to have type '%s': Found '%s'\n", type_string(ctype->funcTy.paramTys.get(i)),
+        if (!is_type_equal(argTy, ctype->funcTy.paramTys[i])) {
+            dx_err(at_node(cmp->currFile->finfo, call->call.args[i]),
+                   "Argument expected to have type '%s': Found '%s'\n", type_string(ctype->funcTy.paramTys[i]),
                    type_string(argTy));
             return nullptr;
         }
@@ -362,7 +362,7 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
             funcTy->funcTy.paramTys = {};
             if (expr->func.params.size) funcTy->funcTy.paramTys.init(expr->func.params.size);
             for (size_t i = 0; i < expr->func.params.size; i++) {
-                Node *param = expr->func.params.get(i);
+                Node *param = expr->func.params[i];
                 if (!param->decl.staticTy) {
                     dx_err(at_node(cmp->currFile->finfo, param), "Function parameter must explicitly specify a type\n");
                     return nullptr;
@@ -592,7 +592,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                     }
                 }
                 for (size_t i = scope_depth(cmp->scopeStack);; i--) {
-                    Scope *scope = cmp->scopeStack->scopes.get(i);
+                    Scope *scope = cmp->scopeStack->scopes[i];
                     if (scope->owner->kind == NodeKind::kFunc) {
                         block->block.branchLevel = i;
                         break;
@@ -602,7 +602,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 break;
             case NodeKind::kLoopBr:
                 for (size_t i = scope_depth(cmp->scopeStack);; i--) {
-                    Scope *scope = cmp->scopeStack->scopes.get(i);
+                    Scope *scope = cmp->scopeStack->scopes[i];
                     if (scope->owner->kind == NodeKind::kWhile) {
                         if (!stmt->loopbr.label.src ||
                             (scope->owner->whilestmt.label.src &&
@@ -646,7 +646,7 @@ Result analyze_function_bodies(CompilationContext *cmp) {
         cmp->currNumPendingFunc = 0;
 
         Node *saveRetTy = cmp->currRetTy;
-        Node *currFunction = cmp->resolveFuncBodyStack.get(cmp->resolveFuncBodyStack.size - 1);
+        Node *currFunction = cmp->resolveFuncBodyStack[cmp->resolveFuncBodyStack.size - 1];
         cmp->currRetTy = currFunction->func.staticRetTy;
         cmp->resolveFuncBodyStack.size--;
 
@@ -694,7 +694,7 @@ Result analyze_global_decl(CompilationContext *cmp, DeclInfo *declInfo) {
 
 Result analyze_package(CompilationContext *cmp, Package *package) {
     for (size_t i = 0; i < package->globalDeclList.size; i++) {
-        if (analyze_global_decl(cmp, package->globalDeclList.get(i))) return kError;
+        if (analyze_global_decl(cmp, package->globalDeclList[i])) return kError;
     }
     return kAccept;
 }

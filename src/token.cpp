@@ -55,12 +55,12 @@ Token *ret_err(Lexer *l) {
 
 char peek_char(Lexer *l) {
     if (is_eof(l)) return 0;
-    return l->finfo->src.get(l->curI + l->curLen);
+    return l->finfo->src[l->curI + l->curLen];
 }
 
 char peek_peek_char(Lexer *l) {
     if (l->curI + l->curLen + 1 >= l->finfo->src.size) return 0;
-    return l->finfo->src.get(l->curI + l->curLen + 1);
+    return l->finfo->src[l->curI + l->curLen + 1];
 }
 
 void lex_single_line_comment(Lexer *l) {

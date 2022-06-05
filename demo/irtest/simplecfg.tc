@@ -1,3 +1,19 @@
+
+/*
+funcWithArgs := :(a: u16, b: u16) {
+  d := 2
+  if d {
+    d = a
+  } else if b {
+    d = 3
+  } else {
+    d = b
+  }
+  c := d
+  c = 1
+}
+*/
+
 test := :() {
 
 /*
@@ -38,6 +54,21 @@ test := :() {
     i = i + 110
   }
   i = 120
+
+/*
+i := 20
+i = 30
+j := i + 5
+if j {
+    a := 2
+    b := a + i
+    if b {}
+} else {
+    a := 5
+    b := a + i
+    if b {}
+}
+*/
 
 /*
   b := 2

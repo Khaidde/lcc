@@ -11,12 +11,16 @@ namespace lcc {
 // Robin hood algorithm based hashmap
 template <typename K, typename V, uint32_t hash_func(K &), bool equal_func(K &, K &)>
 struct LMap {
+private:
     struct Entry {
         K key;
         V val;
         size_t psl;  // Probe sequence length, psl=0 means entry is empty
     };
+
+public:
     void init() { init(8); }
+
     void init(size_t newCapacity) {
         capacity = newCapacity;
         size = 0;
@@ -26,6 +30,7 @@ struct LMap {
             table[i].psl = 0;
         }
     }
+
     V *try_put(K &key, V &val) {  // Returns duplicate key, val if found
         // Load factor of 0.67...
         if ((size + 1) * 3 >= capacity << 1) {
@@ -41,12 +46,39 @@ struct LMap {
         }
         return internal_try_put(key, val);
     }
+
     V *try_put(K &key, V &&val) { return try_put(key, val); }
-    V *get(K &key) {
+
+    V *operator[](K &key) {
         size_t ndx = hash_func(key) % capacity;
         for (size_t off = 0; off < maxPSL; off++) {
             Entry *entry = &table[ndx];
             if (entry->psl && equal_func(entry->key, key)) return &entry->val;
+            ndx = (ndx + 1) % capacity;
+        }
+        return nullptr;
+    }
+
+    V *remove(K &key) {
+        size_t ndx = hash_func(key) % capacity;
+        for (size_t off = 0; off < capacity; off++) {
+            Entry *entry = &table[ndx];
+            if (entry->psl && equal_func(entry->key, key)) {
+                for (;;) {
+                    ndx = (ndx + 1) % capacity;
+                    Entry *next = &table[ndx];
+                    if (next->psl <= 1) {
+                        entry->psl = 0;
+                        size--;
+                        break;
+                    }
+                    entry->key = next->key;
+                    entry->val = next->val;
+                    entry->psl = next->psl - 1;
+                    entry = next;
+                }
+                break;
+            }
             ndx = (ndx + 1) % capacity;
         }
         return nullptr;
@@ -85,6 +117,17 @@ private:
         return nullptr;
     }
 };
+
+template <typename T>
+uint32_t ptr_hash(T *&ptr) {
+    uint32_t hash = (uintptr_t)(ptr) / sizeof(T);
+    return (hash << 5) - hash;
+}
+
+template <typename T>
+bool ptr_equal(T *&ptr1, T *&ptr2) {
+    return ptr1 == ptr2;
+}
 
 }  // namespace lcc
 
