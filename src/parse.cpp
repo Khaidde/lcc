@@ -209,7 +209,7 @@ Result r_parse_type(Lexer *l, Type *dest) {
                     lex_next(l);  // next )
                     break;
                 } else {
-                    dx_err(at_token(l->finfo, lex_peek(l)), "Expected , to separate argment types\n");
+                    dx_err(at_token(l->finfo, lex_peek(l)), "Expected , to separate argument types\n");
                     return kError;
                 }
             }

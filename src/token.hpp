@@ -8,7 +8,7 @@
 
 namespace lcc {
 
-enum class TokenType {
+enum TokenType {
     kDirective,
     kAdd,
     kAddAdd,

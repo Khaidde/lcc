@@ -24,7 +24,7 @@ struct VarInfo {
 struct Opd {
     enum Kind {
         kReg,
-        kConst,
+        kImm,
     } kind;
     union {
         Inst *regVal;
@@ -56,14 +56,22 @@ struct BinInst {
     Opd right;
 };
 
+struct CallInst {
+    // TODO: used right now primarily to mark persistent values
+    // Used to disable certain optimizations form going haywire (DCE)
+    LList<Opd> args;
+};
+
 struct Inst {
     enum Kind {
         kPhi,
         kArg,
         kAssign,
         kBin,
+        kCall,
     } kind;
 
+    Inst *prev;
     Inst *next;
     VReg dst;
     union {
@@ -71,13 +79,8 @@ struct Inst {
         ArgInst arg;
         AssignInst assign;
         BinInst bin;
+        CallInst call;
     };
-};
-
-enum class TerminatorKind {
-    kGoto,
-    kCond,
-    kRet,
 };
 
 struct GotoTerminator {
@@ -91,7 +94,11 @@ struct CondTerminator {
 };
 
 struct Terminator {
-    TerminatorKind kind;
+    enum Kind {
+        kGoto,
+        kCond,
+        kRet,
+    } kind;
 
     union {
         GotoTerminator tgoto;
@@ -114,21 +121,26 @@ struct CFG {
     BasicBlock *exit;
     BasicBlock **map;
 
+    BasicBlock **po;
     BasicBlock **rpo;
+
     BasicBlock **idom;
 };
 
-ListIterator<BasicBlock *> rpo_begin(CFG &cfg);
+ListIterator<BasicBlock *> po_begin(CFG &cfg);
+ListIterator<BasicBlock *> po_end(CFG &cfg);
 
+ListIterator<BasicBlock *> rpo_begin(CFG &cfg);
 ListIterator<BasicBlock *> rpo_end(CFG &cfg);
 
 ListIterator<BasicBlock *> pred_begin(BasicBlock *block);
-
 ListIterator<BasicBlock *> pred_end(BasicBlock *block);
 
+size_t succ_count(BasicBlock *block);
 ListIterator<BasicBlock *> succ_begin(BasicBlock *block);
-
 ListIterator<BasicBlock *> succ_end(BasicBlock *block);
+
+void remove_inst(BasicBlock *block, Inst *inst);
 
 void print_inst(Inst *inst);
 

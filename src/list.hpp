@@ -40,6 +40,16 @@ struct FixedBitField {
         if (capacity > 64) mem::c_free(data);
     }
 
+    void reset() {
+        if (capacity <= 64) {
+            smallData = 0;
+        } else {
+            for (size_t i = 0; i < (capacity >> 2); i++) {
+                data[i] = 0;
+            }
+        }
+    }
+
     void set(size_t i) {
         assert(i < capacity);
         data[i >> 2] |= 1 << (i & 0x7);

@@ -7,6 +7,10 @@
 
 namespace lcc {
 
+ListIterator<BasicBlock *> po_begin(CFG &cfg) { return {&cfg.po[0]}; }
+
+ListIterator<BasicBlock *> po_end(CFG &cfg) { return {&cfg.po[cfg.numBlocks]}; }
+
 ListIterator<BasicBlock *> rpo_begin(CFG &cfg) { return {&cfg.rpo[0]}; }
 
 ListIterator<BasicBlock *> rpo_end(CFG &cfg) { return {&cfg.rpo[cfg.numBlocks]}; }
@@ -15,15 +19,17 @@ ListIterator<BasicBlock *> pred_begin(BasicBlock *block) { return {&block->pred.
 
 ListIterator<BasicBlock *> pred_end(BasicBlock *block) { return {&block->pred.data[block->pred.size]}; }
 
-ListIterator<BasicBlock *> succ_begin(BasicBlock *block) { return {&block->term.succ[0]}; }
-
-ListIterator<BasicBlock *> succ_end(BasicBlock *block) {
+size_t succ_count(BasicBlock *block) {
     switch (block->term.kind) {
-        case TerminatorKind::kCond: return {&block->term.succ[2]};
-        case TerminatorKind::kGoto: return {&block->term.succ[1]};
-        case TerminatorKind::kRet: return {&block->term.succ[0]};
+        case Terminator::Kind::kCond: return 2;
+        case Terminator::Kind::kGoto: return 1;
+        case Terminator::Kind::kRet: return 0;
     }
 }
+
+ListIterator<BasicBlock *> succ_begin(BasicBlock *block) { return {&block->term.succ[0]}; }
+
+ListIterator<BasicBlock *> succ_end(BasicBlock *block) { return {&block->term.succ[succ_count(block)]}; }
 
 namespace {
 
@@ -53,7 +59,7 @@ struct TranslationContext {
 
     VReg regCnt{0};
 
-    LMap<Node *, VarInfo *, ptr_hash<Node>, ptr_equal<Node>> declMap{};  // Maps ast decl to variable info
+    LMap<Node *, VarInfo *, ptr_hash, ptr_equal> declMap{};  // Maps ast decl to variable info
     LList<VarInfo *> varInfoTab{};
     LList<RenameVarLL> useDefTab{};  // Keep track of uses and defs for each block in ssa variable renaming
 };
@@ -61,11 +67,13 @@ struct TranslationContext {
 Inst *create_inst(Inst::Kind kind) {
     Inst *inst = mem::p_malloc<Inst>();
     inst->kind = kind;
+    inst->prev = nullptr;
     inst->next = nullptr;
     return inst;
 }
 
 void add_inst(TranslationContext &tctx, Inst *inst) {
+    inst->prev = tctx.currBB->end;
     if (tctx.currBB->start) {
         tctx.currBB->end->next = inst;
     } else {
@@ -137,7 +145,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block);
 void translate_expr(TranslationContext &tctx, Opd &out, Node *expr) {
     switch (expr->kind) {
         case NodeKind::kIntLit: {
-            out.kind = Opd::Kind::kConst;
+            out.kind = Opd::Kind::kImm;
             out.intval = expr->intLit.intVal;
             mem::p_free(expr);
             break;
@@ -160,8 +168,8 @@ void translate_expr(TranslationContext &tctx, Opd &out, Node *expr) {
             translate_expr(tctx, bin->bin.left, expr->infix.left);
             translate_expr(tctx, bin->bin.right, expr->infix.right);
             mem::p_free(expr);
-            if (bin->bin.left.kind == Opd::Kind::kConst && bin->bin.right.kind == Opd::Kind::kConst) {
-                out.kind = Opd::Kind::kConst;
+            if (bin->bin.left.kind == Opd::Kind::kImm && bin->bin.right.kind == Opd::Kind::kImm) {
+                out.kind = Opd::Kind::kImm;
                 switch (expr->infix.op) {
                     case TokenType::kAdd: out.intval = bin->bin.left.intval + bin->bin.right.intval; break;
                     default: assert(false && "TODO: unimplemented constant folding for infix operation");
@@ -179,22 +187,7 @@ void translate_expr(TranslationContext &tctx, Opd &out, Node *expr) {
 }
 
 void translate_decl(TranslationContext &tctx, Node *decl) {
-    if (decl->decl.lval->kind == NodeKind::kName && decl->decl.rval) {
-        Inst *declInst = create_inst(Inst::Kind::kAssign);
-        // Must calculate before translate_expr because decl->decl.rval is freed
-        bool isInfix = decl->decl.rval->kind == NodeKind::kInfix;
-        translate_expr(tctx, declInst->assign.src, decl->decl.rval);
-
-        // Minimize copies of temporaries when expression was infix node
-        if (isInfix && declInst->assign.src.kind == Opd::Kind::kReg) {
-            Inst *srcInst = declInst->assign.src.regVal;
-            mem::p_free(declInst);
-            declInst = srcInst;
-        } else {
-            declInst->dst = tctx.regCnt++;
-            add_inst(tctx, declInst);
-        }
-
+    if (decl->decl.lval->kind == NodeKind::kName) {
         // Keep track of definitions
         VarInfo *info;
         if (VarInfo **infoPtr = tctx.declMap[decl->decl.lval->name.ref]) {
@@ -207,7 +200,24 @@ void translate_decl(TranslationContext &tctx, Node *decl) {
         } else {
             info = init_new_variable(tctx, decl);
         }
-        create_def(tctx, info, declInst);
+
+        if (decl->decl.rval) {
+            Inst *declInst = create_inst(Inst::Kind::kAssign);
+            // Must calculate before translate_expr because decl->decl.rval is freed
+            bool isInfix = decl->decl.rval->kind == NodeKind::kInfix;
+            translate_expr(tctx, declInst->assign.src, decl->decl.rval);
+
+            // Minimize copies of temporaries when expression was infix node
+            if (isInfix && declInst->assign.src.kind == Opd::Kind::kReg) {
+                Inst *srcInst = declInst->assign.src.regVal;
+                mem::p_free(declInst);
+                declInst = srcInst;
+            } else {
+                declInst->dst = tctx.regCnt++;
+                add_inst(tctx, declInst);
+            }
+            create_def(tctx, info, declInst);
+        }
     }
     mem::p_free(decl->decl.lval);
     mem::p_free(decl);
@@ -215,10 +225,10 @@ void translate_decl(TranslationContext &tctx, Node *decl) {
 
 void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
     for (;;) {
-        entry->term.kind = TerminatorKind::kCond;
+        entry->term.kind = Terminator::Kind::kCond;
 
         translate_expr(tctx, entry->term.cond.predicate, ifstmt->ifstmt.cond);
-        if (entry->term.cond.predicate.kind == Opd::Kind::kConst) {
+        if (entry->term.cond.predicate.kind == Opd::Kind::kImm) {
             // TODO optimization where if statement of constant expression is culled
             // assert(predicate.kind == Opd::Kind::kReg);
             assert(false && "TODO: Const value if statement predicate opt");
@@ -250,7 +260,7 @@ void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit,
 }
 
 void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
-    entry->term.kind = TerminatorKind::kCond;
+    entry->term.kind = Terminator::Kind::kCond;
     entry->term.cond.alt = exit;
 
     // TODO optimization where while statement of condition 0/false is culled
@@ -264,7 +274,7 @@ void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *ex
     BasicBlock *loop = tctx.currBB = create_block(tctx.cfg);
     entry->term.cond.then = loop;
 
-    loop->term.kind = TerminatorKind::kGoto;
+    loop->term.kind = Terminator::Kind::kGoto;
     loop->term.tgoto.target = entry;
 
     translate_block(tctx, entry, whilestmt->whilestmt.loop);
@@ -279,6 +289,17 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
         switch (stmt->kind) {
             case NodeKind::kDecl: {
                 translate_decl(tctx, stmt);
+                break;
+            }
+            case NodeKind::kCall: {
+                Inst *call = create_inst(Inst::Kind::kCall);
+                call->call.args.init(stmt->call.args.size);
+                for (size_t i = 0; i < stmt->call.args.size; i++) {
+                    Node *arg = stmt->call.args[i];
+                    call->call.args.add({});
+                    translate_expr(tctx, call->call.args[i], arg);
+                }
+                add_inst(tctx, call);
                 break;
             }
             case NodeKind::kIf: {
@@ -299,7 +320,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
             case NodeKind::kWhile: {
                 if (tctx.currBB->start) {
                     BasicBlock *cond = create_block(tctx.cfg);
-                    tctx.currBB->term.kind = TerminatorKind::kGoto;
+                    tctx.currBB->term.kind = Terminator::Kind::kGoto;
                     tctx.currBB->term.tgoto.target = cond;
                     tctx.currBB = cond;
                 }
@@ -317,7 +338,7 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
                 break;
             }
             case NodeKind::kLoopBr: {
-                tctx.currBB->term.kind = TerminatorKind::kGoto;
+                tctx.currBB->term.kind = Terminator::Kind::kGoto;
                 if (stmt->loopbr.isBreak) {
                     tctx.currBB->term.tgoto.target = stmt->loopbr.ref->whilestmt.info->exit;
                 } else {
@@ -327,7 +348,15 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
                 return;
             }
             case NodeKind::kRet: {
-                tctx.currBB->term.kind = TerminatorKind::kGoto;
+                if (stmt->ret.value) {
+                    Inst *retValue = create_inst(Inst::Kind::kAssign);
+                    translate_expr(tctx, retValue->assign.src, stmt->ret.value);
+                    // TODO: minimize excess copy propagation
+                    retValue->dst = tctx.regCnt++;
+                    add_inst(tctx, retValue);
+                }
+
+                tctx.currBB->term.kind = Terminator::Kind::kGoto;
                 tctx.currBB->term.tgoto.target = tctx.cfg.exit;
                 mem::p_free(block);
                 return;
@@ -335,45 +364,50 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
             default: assert(false && "TODO: no translation implemented for statement kind"); unreachable();
         }
     }
-    tctx.currBB->term.kind = TerminatorKind::kGoto;
+    tctx.currBB->term.kind = Terminator::Kind::kGoto;
     tctx.currBB->term.tgoto.target = exit;
     mem::p_free(block);
 }  // namespace
 
+using IteratorCB = ListIterator<BasicBlock *>(BasicBlock *);
+
 // Simple, Fast Dominance Algorithm
 // by Cooper et al.
-void init_dominator_tree(CFG &cfg) {
+BasicBlock **dom_tree(CFG &cfg) {
     // post order numberings
-    size_t *po = mem::c_malloc<size_t>(cfg.numBlocks);
+    size_t *pnum = mem::c_malloc<size_t>(cfg.numBlocks);
     for (size_t p = 0; p < cfg.numBlocks; p++) {
-        po[cfg.rpo[p]->id] = p;
+        pnum[cfg.rpo[p]->id] = p;
     }
 
-    cfg.idom = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    BasicBlock **idom = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
     for (size_t i = 0; i < cfg.numBlocks; i++) {
-        cfg.idom[i] = nullptr;
+        idom[i] = nullptr;
     }
-    cfg.idom[0] = cfg.entry;
+    BasicBlock *entry = cfg.rpo[0];
+    idom[entry->id] = entry;
     bool changed = true;
     while (changed) {
         changed = false;
 
         // For each basic block excluding entry node
-        for (auto bb = ++rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
+        for (size_t i = 1; i < cfg.numBlocks; i++) {
+            BasicBlock *bb = cfg.rpo[i];
+
             BasicBlock *newIdom = nullptr;
-            for (auto pred = pred_begin(*bb), end = pred_end(*bb); pred != end; ++pred) {
-                if (cfg.idom[(*pred)->id] != nullptr) {
+            for (auto pred = pred_begin(bb), end = pred_end(bb); pred != end; ++pred) {
+                if (idom[(*pred)->id] != nullptr) {
                     if (newIdom) {
                         // Calculate dominator set intersection between predecessor
                         // and existing dominator set
                         BasicBlock *b1 = *pred;
                         BasicBlock *b2 = newIdom;
                         while (b1 != b2) {
-                            while (po[b1->id] > po[b2->id]) {
-                                b1 = cfg.idom[b1->id];
+                            while (pnum[b1->id] > pnum[b2->id]) {
+                                b1 = idom[b1->id];
                             }
-                            while (po[b1->id] < po[b2->id]) {
-                                b2 = cfg.idom[b2->id];
+                            while (pnum[b1->id] < pnum[b2->id]) {
+                                b2 = idom[b2->id];
                             }
                         }
                         newIdom = b1;
@@ -382,12 +416,13 @@ void init_dominator_tree(CFG &cfg) {
                     }
                 }
             }
-            if (cfg.idom[(*bb)->id] != newIdom) {
-                cfg.idom[(*bb)->id] = newIdom;
+            if (idom[bb->id] != newIdom) {
+                idom[bb->id] = newIdom;
                 changed = true;
             }
         }
     }
+    return idom;
 }
 
 void dfs(CFG &cfg, BasicBlock *curr, size_t &toVisit, FixedBitField &visited) {
@@ -400,28 +435,31 @@ void dfs(CFG &cfg, BasicBlock *curr, size_t &toVisit, FixedBitField &visited) {
         }
         (*succ)->pred.add(curr);
     }
+    cfg.po[cfg.numBlocks - toVisit] = curr;
     cfg.rpo[--toVisit] = curr;
 }
 
 void init_cfg(CFG &cfg) {
     cfg.map = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    cfg.po = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
     cfg.rpo = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
 
     // Note that entry block always reaches every other block
     // so only one dfs call is needed
-    // Sets up id to block map, predecessor and rpo
+    // Sets up id to block map, predecessor, po and rpo
+    // Generate dominator tree
     FixedBitField visited;
     visited.init(cfg.numBlocks);
     size_t toVisit = cfg.numBlocks;
     dfs(cfg, cfg.entry, toVisit, visited);
-    visited.destroy();
-
-    init_dominator_tree(cfg);
+    cfg.idom = dom_tree(cfg);
 }
 
 void rename_block(TranslationContext &tctx, LList<BasicBlock *> *&dominates, BasicBlock *curr) {
     size_t *numDefs = mem::c_malloc<size_t>(tctx.varInfoTab.size);
-    memset(numDefs, 0, tctx.varInfoTab.size * sizeof(size_t));
+    for (size_t i = 0; i < tctx.varInfoTab.size; i++) {
+        numDefs[i] = 0;
+    }
 
     Inst *phi = curr->start;
     while (phi && phi->kind == Inst::Kind::kPhi) {
@@ -473,7 +511,7 @@ void rename_block(TranslationContext &tctx, LList<BasicBlock *> *&dominates, Bas
 void print_opd(Opd &opd) {
     switch (opd.kind) {
         case Opd::Kind::kReg: printf("v%d", opd.regVal->dst); break;
-        case Opd::Kind::kConst: printf("%d", opd.intval); break;
+        case Opd::Kind::kImm: printf("%d", opd.intval); break;
     }
 }
 
@@ -488,13 +526,13 @@ void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
     }
     bid++;
     switch (basicBlock->term.kind) {
-        case TerminatorKind::kGoto: {
+        case Terminator::Kind::kGoto: {
             BasicBlock *exit = basicBlock->term.tgoto.target;
             printf("  goto b%d\n", exit->id);
             if (bid == exit->id) r_print_block(bid, exit);
             break;
         }
-        case TerminatorKind::kCond: {
+        case Terminator::Kind::kCond: {
             BasicBlock *then = basicBlock->term.cond.then;
             BasicBlock *alt = basicBlock->term.cond.alt;
 
@@ -506,14 +544,28 @@ void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
             if (bid == alt->id) r_print_block(bid, alt);
             break;
         }
-        case TerminatorKind::kRet: printf("  ret\n"); break;
+        case Terminator::Kind::kRet: printf("  ret\n"); break;
     }
 }
 
 }  // namespace
 
+void remove_inst(BasicBlock *block, Inst *inst) {
+    if (inst->prev) {
+        inst->prev->next = inst->next;
+    } else {
+        block->start = inst->next;
+    }
+    if (inst->next) {
+        inst->next->prev = inst->prev;
+    } else {
+        block->end = inst->prev;
+    }
+    mem::p_free(inst);
+}
+
 void print_inst(Inst *inst) {
-    printf("v%d = ", inst->dst);
+    if (inst->kind != Inst::Kind::kCall) printf("v%d = ", inst->dst);
     switch (inst->kind) {
         case Inst::Kind::kPhi:
             printf("phi(");
@@ -535,12 +587,23 @@ void print_inst(Inst *inst) {
             const char *opstr;
             switch (inst->bin.op) {
                 case TokenType::kAdd: opstr = "add"; break;
+                case TokenType::kSubNeg: opstr = "sub"; break;
                 default: opstr = "?";
             }
             printf("%s(", opstr);
             print_opd(inst->bin.left);
             printf(", ");
             print_opd(inst->bin.right);
+            printf(")\n");
+            break;
+        case Inst::Kind::kCall:
+            printf("<call>(");
+            for (size_t i = 0; i < inst->call.args.size; i++) {
+                print_opd(inst->call.args[i]);
+                if (i + 1 < inst->call.args.size) {
+                    printf(", ");
+                }
+            }
             printf(")\n");
             break;
     }
@@ -575,7 +638,7 @@ void translate_function(CFG &cfg, Node *function) {
     cfg.exit = create_empty_block();
     translate_block(tctx, cfg.exit, function->func.body);
     cfg.exit->id = cfg.numBlocks++;
-    cfg.exit->term.kind = TerminatorKind::kRet;
+    cfg.exit->term.kind = Terminator::Kind::kRet;
 
     init_cfg(cfg);
 

@@ -1,10 +1,24 @@
 
-gvn := :() -> u16 {
-    a := 6
-
+gvn := :(a: u16) {
     b := 3 + a
     c := a
- //   e := a
-    d := 3 + 2 + c
-    ret d + b
+    d := c + 3
+
+    e: u16
+    f: u16
+
+    f = c + d + 1
+    e = a + d + 1
+
+    unused(e + f + b)
+}
+
+no_gvn := :(a: u16) {
+    b := a
+    if a {
+       b = 3
+    }
+    c := a + 5
+    d := b + 5
+    unused(c + d)
 }

@@ -1,3 +1,5 @@
 
 u16 : type #extern
 string : type #extern
+
+unused : (u16) #extern

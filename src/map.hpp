@@ -61,7 +61,7 @@ public:
 
     V *remove(K &key) {
         size_t ndx = hash_func(key) % capacity;
-        for (size_t off = 0; off < capacity; off++) {
+        for (size_t off = 0; off < maxPSL; off++) {
             Entry *entry = &table[ndx];
             if (entry->psl && equal_func(entry->key, key)) {
                 for (;;) {
@@ -82,6 +82,14 @@ public:
             ndx = (ndx + 1) % capacity;
         }
         return nullptr;
+    }
+
+    void for_each(void(callback)(K &k, V &v)) {
+        for (size_t i = 0; i < capacity; i++) {
+            if (table[i].psl) {
+                callback(table[i].key, table[i].val);
+            }
+        }
     }
 
     Entry *table{nullptr};

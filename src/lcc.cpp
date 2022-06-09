@@ -218,22 +218,24 @@ CompilationContext preload(const char *preloadFilePath) {
     ErrCode parseRes = resolve_file(cmp, file, preloadFilePath);
     if (parseRes != ErrCode::kSuccess) assert(false);
 
-    cmp.currFile = preloadFile;
-    if (analyze_package(&cmp, cmp.preloadPkg) != kAccept) assert(false);
-
     builtin_type::none = mem::malloc<Type>();
     builtin_type::none->kind = TypeKind::kNone;
 
     builtin_type::u16 = mem::malloc<Type>();
     builtin_type::u16->kind = TypeKind::kNamed;
     builtin_type::u16->name.ident = {"u16", 3};
-    DeclInfo **u16Ref = cmp.preloadPkg->globalDecls[builtin_type::u16->name.ident];
-    assert(u16Ref);
-    builtin_type::u16->name.ref = (*u16Ref)->declNode;
 
     builtin_type::string = mem::malloc<Type>();
     builtin_type::string->kind = TypeKind::kNamed;
     builtin_type::string->name.ident = {"string", 6};
+
+    cmp.currFile = preloadFile;
+    if (analyze_package(&cmp, cmp.preloadPkg) != kAccept) assert(false);
+
+    DeclInfo **u16Ref = cmp.preloadPkg->globalDecls[builtin_type::u16->name.ident];
+    assert(u16Ref);
+    builtin_type::u16->name.ref = (*u16Ref)->declNode;
+
     DeclInfo **stringRef = cmp.preloadPkg->globalDecls[builtin_type::string->name.ident];
     assert(stringRef);
     builtin_type::string->name.ref = (*stringRef)->declNode;
@@ -374,14 +376,12 @@ ErrCode compile(const char *path) {
     Package *package = *cmp.packageMap[root];
     for (size_t i = 0; i < package->globalDeclList.size; i++) {
         Node *decl = package->globalDeclList[i]->declNode;
-        if (decl->decl.rval->kind == NodeKind::kFunc) {
-            if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
-                CFG cfg;
-                translate_function(cfg, decl->decl.rval);
-                print_cfg(cfg);
-
-                optimize(cfg);
-            }
+        if (!decl->decl.rval) continue;
+        if (decl->decl.rval->kind != NodeKind::kFunc) continue;
+        if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
+            CFG cfg;
+            translate_function(cfg, decl->decl.rval);
+            optimize(cfg);
         }
     }
 

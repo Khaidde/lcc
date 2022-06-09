@@ -172,7 +172,9 @@ Result r_simplify_type_alias(CompilationContext *cmp, Node *src, Type *type) {
             for (size_t i = 0; i < type->funcTy.paramTys.size; i++) {
                 if (r_simplify_type_alias(cmp, src, type->funcTy.paramTys[i])) return kError;
             }
-            return r_simplify_type_alias(cmp, src, type->funcTy.retTy);
+            if (type->funcTy.retTy) return r_simplify_type_alias(cmp, src, type->funcTy.retTy);
+            type->funcTy.retTy = builtin_type::none;
+            break;
     }
     return kAccept;
 }
