@@ -1,6 +1,4 @@
-#include "translate.hpp"
-
-#include <cstdio>
+#include "ir.hpp"
 
 #include "ast.hpp"
 #include "print.hpp"
@@ -52,12 +50,18 @@ struct RenameVarLL {
     RenameVar *end;
 };
 
-struct TranslationContext {
+struct GenIRContext {
     CFG &cfg;
 
     BasicBlock *currBB{nullptr};
 
     VReg regCnt{0};
+
+    struct LoopInfo {
+        BasicBlock *entry;
+        BasicBlock *exit;
+    };
+    LMap<Node *, LoopInfo, ptr_hash, ptr_equal> loopMap{};  // Maps ast while to loop entry and exit blocks
 
     LMap<Node *, VarInfo *, ptr_hash, ptr_equal> declMap{};  // Maps ast decl to variable info
     LList<VarInfo *> varInfoTab{};
@@ -72,22 +76,22 @@ Inst *create_inst(Inst::Kind kind) {
     return inst;
 }
 
-void add_inst(TranslationContext &tctx, Inst *inst) {
-    inst->prev = tctx.currBB->end;
-    if (tctx.currBB->start) {
-        tctx.currBB->end->next = inst;
+void add_inst(GenIRContext &irc, Inst *inst) {
+    inst->prev = irc.currBB->end;
+    if (irc.currBB->start) {
+        irc.currBB->end->next = inst;
     } else {
-        tctx.currBB->start = inst;
+        irc.currBB->start = inst;
     }
-    tctx.currBB->end = inst;
+    irc.currBB->end = inst;
 }
 
-RenameVar *create_use_def(TranslationContext &tctx) {
-    while (tctx.useDefTab.size <= tctx.currBB->id) {
-        tctx.useDefTab.add({nullptr, nullptr});
+RenameVar *create_use_def(GenIRContext &irc) {
+    while (irc.useDefTab.size <= irc.currBB->id) {
+        irc.useDefTab.add({nullptr, nullptr});
     }
 
-    RenameVarLL &usedefList = tctx.useDefTab[tctx.currBB->id];
+    RenameVarLL &usedefList = irc.useDefTab[irc.currBB->id];
 
     RenameVar *newUseDef = mem::p_malloc<RenameVar>();
     newUseDef->next = nullptr;
@@ -100,29 +104,29 @@ RenameVar *create_use_def(TranslationContext &tctx) {
     return newUseDef;
 }
 
-void create_use(TranslationContext &tctx, VarInfo *varInfo, Inst **ref) {
-    RenameVar *use = create_use_def(tctx);
+void create_use(GenIRContext &irc, VarInfo *varInfo, Inst **ref) {
+    RenameVar *use = create_use_def(irc);
     use->kind = RenameVar::Kind::kUse;
     use->varid = varInfo->varid;
     use->use = ref;
 }
 
-void create_def(TranslationContext &tctx, VarInfo *varInfo, Inst *ref) {
-    RenameVar *def = create_use_def(tctx);
+void create_def(GenIRContext &irc, VarInfo *varInfo, Inst *ref) {
+    RenameVar *def = create_use_def(irc);
     def->kind = RenameVar::Kind::kDef;
     def->varid = varInfo->varid;
     def->def = ref;
 }
 
-VarInfo *init_new_variable(TranslationContext &tctx, Node *decl) {
+VarInfo *init_new_variable(GenIRContext &irc, Node *decl) {
     VarInfo *info = mem::p_malloc<VarInfo>();
-    info->varid = tctx.varInfoTab.size;
+    info->varid = irc.varInfoTab.size;
     info->defSites = {};
     info->defStack = {};
-    info->defSites.add(tctx.currBB->id);
+    info->defSites.add(irc.currBB->id);
 
-    tctx.declMap.try_put(decl, info);
-    tctx.varInfoTab.add(info);
+    irc.declMap.try_put(decl, info);
+    irc.varInfoTab.add(info);
 
     return info;
 }
@@ -140,9 +144,7 @@ BasicBlock *create_block(CFG &cfg) {
     return block;
 }
 
-void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block);
-
-void translate_expr(TranslationContext &tctx, Opd &out, Node *expr) {
+void translate_expr(GenIRContext &irc, Opd &out, Node *expr) {
     switch (expr->kind) {
         case NodeKind::kIntLit: {
             out.kind = Opd::Kind::kImm;
@@ -157,16 +159,16 @@ void translate_expr(TranslationContext &tctx, Opd &out, Node *expr) {
             }
             out.kind = Opd::Kind::kReg;
             out.regVal = nullptr;
-            VarInfo *info = (*tctx.declMap[expr->name.ref]);
-            create_use(tctx, info, &out.regVal);
+            VarInfo *info = (*irc.declMap[expr->name.ref]);
+            create_use(irc, info, &out.regVal);
             mem::p_free(expr);
             break;
         }
         case NodeKind::kInfix: {
             Inst *bin = create_inst(Inst::Kind::kBin);
             bin->bin.op = expr->infix.op;
-            translate_expr(tctx, bin->bin.left, expr->infix.left);
-            translate_expr(tctx, bin->bin.right, expr->infix.right);
+            translate_expr(irc, bin->bin.left, expr->infix.left);
+            translate_expr(irc, bin->bin.right, expr->infix.right);
             mem::p_free(expr);
             if (bin->bin.left.kind == Opd::Kind::kImm && bin->bin.right.kind == Opd::Kind::kImm) {
                 out.kind = Opd::Kind::kImm;
@@ -177,8 +179,8 @@ void translate_expr(TranslationContext &tctx, Opd &out, Node *expr) {
             } else {
                 out.kind = Opd::Kind::kReg;
                 out.regVal = bin;
-                bin->dst = tctx.regCnt++;
-                add_inst(tctx, bin);
+                bin->dst = irc.regCnt++;
+                add_inst(irc, bin);
             }
             break;
         }
@@ -186,26 +188,26 @@ void translate_expr(TranslationContext &tctx, Opd &out, Node *expr) {
     }
 }
 
-void translate_decl(TranslationContext &tctx, Node *decl) {
+void translate_decl(GenIRContext &irc, Node *decl) {
     if (decl->decl.lval->kind == NodeKind::kName) {
         // Keep track of definitions
         VarInfo *info;
-        if (VarInfo **infoPtr = tctx.declMap[decl->decl.lval->name.ref]) {
+        if (VarInfo **infoPtr = irc.declMap[decl->decl.lval->name.ref]) {
             // Ensure no duplicated before adding to definition sites
             // Assumes that we iterate blocks in order and never revisit
             info = *infoPtr;
-            if (info->defSites.last() != tctx.currBB->id) {
-                info->defSites.add(tctx.currBB->id);
+            if (info->defSites.last() != irc.currBB->id) {
+                info->defSites.add(irc.currBB->id);
             }
         } else {
-            info = init_new_variable(tctx, decl);
+            info = init_new_variable(irc, decl);
         }
 
         if (decl->decl.rval) {
             Inst *declInst = create_inst(Inst::Kind::kAssign);
             // Must calculate before translate_expr because decl->decl.rval is freed
             bool isInfix = decl->decl.rval->kind == NodeKind::kInfix;
-            translate_expr(tctx, declInst->assign.src, decl->decl.rval);
+            translate_expr(irc, declInst->assign.src, decl->decl.rval);
 
             // Minimize copies of temporaries when expression was infix node
             if (isInfix && declInst->assign.src.kind == Opd::Kind::kReg) {
@@ -213,40 +215,42 @@ void translate_decl(TranslationContext &tctx, Node *decl) {
                 mem::p_free(declInst);
                 declInst = srcInst;
             } else {
-                declInst->dst = tctx.regCnt++;
-                add_inst(tctx, declInst);
+                declInst->dst = irc.regCnt++;
+                add_inst(irc, declInst);
             }
-            create_def(tctx, info, declInst);
+            create_def(irc, info, declInst);
         }
     }
     mem::p_free(decl->decl.lval);
     mem::p_free(decl);
 }
 
-void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
+void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block);
+
+void translate_if(GenIRContext &irc, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
     for (;;) {
         entry->term.kind = Terminator::Kind::kCond;
 
-        translate_expr(tctx, entry->term.cond.predicate, ifstmt->ifstmt.cond);
+        translate_expr(irc, entry->term.cond.predicate, ifstmt->ifstmt.cond);
         if (entry->term.cond.predicate.kind == Opd::Kind::kImm) {
             // TODO optimization where if statement of constant expression is culled
             // assert(predicate.kind == Opd::Kind::kReg);
             assert(false && "TODO: Const value if statement predicate opt");
         }
 
-        BasicBlock *then = tctx.currBB = create_block(tctx.cfg);
+        BasicBlock *then = irc.currBB = create_block(irc.cfg);
         entry->term.cond.then = then;
-        translate_block(tctx, exit, ifstmt->ifstmt.then);
+        translate_block(irc, exit, ifstmt->ifstmt.then);
 
         if (!ifstmt->ifstmt.alt) {
             entry->term.cond.alt = exit;
             mem::p_free(ifstmt);
             return;
         }
-        BasicBlock *alt = tctx.currBB = create_block(tctx.cfg);
+        BasicBlock *alt = irc.currBB = create_block(irc.cfg);
         entry->term.cond.alt = alt;
         if (ifstmt->ifstmt.alt->kind == NodeKind::kBlock) {
-            translate_block(tctx, exit, ifstmt->ifstmt.alt);
+            translate_block(irc, exit, ifstmt->ifstmt.alt);
             mem::p_free(ifstmt);
             return;
         }
@@ -259,36 +263,35 @@ void translate_if(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit,
     }
 }
 
-void translate_while(TranslationContext &tctx, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
+void translate_while(GenIRContext &irc, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
     entry->term.kind = Terminator::Kind::kCond;
     entry->term.cond.alt = exit;
 
     // TODO optimization where while statement of condition 0/false is culled
     // assert(predicate.kind == Opd::Kind::kReg);
-    translate_expr(tctx, entry->term.cond.predicate, whilestmt->whilestmt.cond);
+    translate_expr(irc, entry->term.cond.predicate, whilestmt->whilestmt.cond);
 
     // Goto targets for break and continue statements
-    whilestmt->whilestmt.info->entry = entry;
-    whilestmt->whilestmt.info->exit = exit;
+    irc.loopMap.try_put(whilestmt, {entry, exit});
 
-    BasicBlock *loop = tctx.currBB = create_block(tctx.cfg);
+    BasicBlock *loop = irc.currBB = create_block(irc.cfg);
     entry->term.cond.then = loop;
 
     loop->term.kind = Terminator::Kind::kGoto;
     loop->term.tgoto.target = entry;
 
-    translate_block(tctx, entry, whilestmt->whilestmt.loop);
+    translate_block(irc, entry, whilestmt->whilestmt.loop);
 
     mem::p_free(whilestmt);
 }
 
-void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
+void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
     assert(block->kind == NodeKind::kBlock);
     for (StatementListNode *stmtNode = block->block.start; stmtNode; stmtNode = stmtNode->next) {
         Node *stmt = stmtNode->stmt;
         switch (stmt->kind) {
             case NodeKind::kDecl: {
-                translate_decl(tctx, stmt);
+                translate_decl(irc, stmt);
                 break;
             }
             case NodeKind::kCall: {
@@ -297,52 +300,52 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
                 for (size_t i = 0; i < stmt->call.args.size; i++) {
                     Node *arg = stmt->call.args[i];
                     call->call.args.add({});
-                    translate_expr(tctx, call->call.args[i], arg);
+                    translate_expr(irc, call->call.args[i], arg);
                 }
-                add_inst(tctx, call);
+                add_inst(irc, call);
                 break;
             }
             case NodeKind::kIf: {
                 if (stmtNode->next) {
                     BasicBlock *ifExit = create_empty_block();
-                    translate_if(tctx, tctx.currBB, ifExit, stmt);
-                    ifExit->id = tctx.cfg.numBlocks++;
+                    translate_if(irc, irc.currBB, ifExit, stmt);
+                    ifExit->id = irc.cfg.numBlocks++;
 
-                    tctx.currBB = ifExit;
+                    irc.currBB = ifExit;
                     break;
                 } else {
-                    translate_if(tctx, tctx.currBB, exit, stmt);
+                    translate_if(irc, irc.currBB, exit, stmt);
                     mem::p_free(block);
                     return;
                 }
                 break;
             }
             case NodeKind::kWhile: {
-                if (tctx.currBB->start) {
-                    BasicBlock *cond = create_block(tctx.cfg);
-                    tctx.currBB->term.kind = Terminator::Kind::kGoto;
-                    tctx.currBB->term.tgoto.target = cond;
-                    tctx.currBB = cond;
+                if (irc.currBB->start) {
+                    BasicBlock *cond = create_block(irc.cfg);
+                    irc.currBB->term.kind = Terminator::Kind::kGoto;
+                    irc.currBB->term.tgoto.target = cond;
+                    irc.currBB = cond;
                 }
                 if (stmtNode->next) {
                     BasicBlock *whileExit = create_empty_block();
-                    translate_while(tctx, tctx.currBB, whileExit, stmt);
-                    whileExit->id = tctx.cfg.numBlocks++;
-                    tctx.currBB = whileExit;
+                    translate_while(irc, irc.currBB, whileExit, stmt);
+                    whileExit->id = irc.cfg.numBlocks++;
+                    irc.currBB = whileExit;
                     break;
                 } else {
-                    translate_while(tctx, tctx.currBB, exit, stmt);
+                    translate_while(irc, irc.currBB, exit, stmt);
                     mem::p_free(block);
                     return;
                 }
                 break;
             }
             case NodeKind::kLoopBr: {
-                tctx.currBB->term.kind = Terminator::Kind::kGoto;
+                irc.currBB->term.kind = Terminator::Kind::kGoto;
                 if (stmt->loopbr.isBreak) {
-                    tctx.currBB->term.tgoto.target = stmt->loopbr.ref->whilestmt.info->exit;
+                    irc.currBB->term.tgoto.target = irc.loopMap[stmt->loopbr.ref]->exit;
                 } else {
-                    tctx.currBB->term.tgoto.target = stmt->loopbr.ref->whilestmt.info->entry;
+                    irc.currBB->term.tgoto.target = irc.loopMap[stmt->loopbr.ref]->entry;
                 }
                 mem::p_free(block);
                 return;
@@ -350,26 +353,24 @@ void translate_block(TranslationContext &tctx, BasicBlock *exit, Node *block) {
             case NodeKind::kRet: {
                 if (stmt->ret.value) {
                     Inst *retValue = create_inst(Inst::Kind::kAssign);
-                    translate_expr(tctx, retValue->assign.src, stmt->ret.value);
+                    translate_expr(irc, retValue->assign.src, stmt->ret.value);
                     // TODO: minimize excess copy propagation
-                    retValue->dst = tctx.regCnt++;
-                    add_inst(tctx, retValue);
+                    retValue->dst = irc.regCnt++;
+                    add_inst(irc, retValue);
                 }
 
-                tctx.currBB->term.kind = Terminator::Kind::kGoto;
-                tctx.currBB->term.tgoto.target = tctx.cfg.exit;
+                irc.currBB->term.kind = Terminator::Kind::kGoto;
+                irc.currBB->term.tgoto.target = irc.cfg.exit;
                 mem::p_free(block);
                 return;
             }
             default: assert(false && "TODO: no translation implemented for statement kind"); unreachable();
         }
     }
-    tctx.currBB->term.kind = Terminator::Kind::kGoto;
-    tctx.currBB->term.tgoto.target = exit;
+    irc.currBB->term.kind = Terminator::Kind::kGoto;
+    irc.currBB->term.tgoto.target = exit;
     mem::p_free(block);
-}  // namespace
-
-using IteratorCB = ListIterator<BasicBlock *>(BasicBlock *);
+}
 
 // Simple, Fast Dominance Algorithm
 // by Cooper et al.
@@ -439,25 +440,9 @@ void dfs(CFG &cfg, BasicBlock *curr, size_t &toVisit, FixedBitField &visited) {
     cfg.rpo[--toVisit] = curr;
 }
 
-void init_cfg(CFG &cfg) {
-    cfg.map = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
-    cfg.po = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
-    cfg.rpo = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
-
-    // Note that entry block always reaches every other block
-    // so only one dfs call is needed
-    // Sets up id to block map, predecessor, po and rpo
-    // Generate dominator tree
-    FixedBitField visited;
-    visited.init(cfg.numBlocks);
-    size_t toVisit = cfg.numBlocks;
-    dfs(cfg, cfg.entry, toVisit, visited);
-    cfg.idom = dom_tree(cfg);
-}
-
-void rename_block(TranslationContext &tctx, LList<BasicBlock *> *&dominates, BasicBlock *curr) {
-    size_t *numDefs = mem::c_malloc<size_t>(tctx.varInfoTab.size);
-    for (size_t i = 0; i < tctx.varInfoTab.size; i++) {
+void rename_block(GenIRContext &irc, LList<BasicBlock *> *&dominates, BasicBlock *curr) {
+    size_t *numDefs = mem::c_malloc<size_t>(irc.varInfoTab.size);
+    for (size_t i = 0; i < irc.varInfoTab.size; i++) {
         numDefs[i] = 0;
     }
 
@@ -469,10 +454,10 @@ void rename_block(TranslationContext &tctx, LList<BasicBlock *> *&dominates, Bas
         phi = phi->next;
     }
 
-    if (curr->id < tctx.useDefTab.size) {
-        RenameVar *currUseDef = tctx.useDefTab[curr->id].start;
+    if (curr->id < irc.useDefTab.size) {
+        RenameVar *currUseDef = irc.useDefTab[curr->id].start;
         while (currUseDef) {
-            VarInfo *info = tctx.varInfoTab[currUseDef->varid];
+            VarInfo *info = irc.varInfoTab[currUseDef->varid];
             if (currUseDef->kind == RenameVar::Kind::kDef) {
                 info->defStack.add(currUseDef->def);
                 numDefs[info->varid]++;
@@ -498,12 +483,12 @@ void rename_block(TranslationContext &tctx, LList<BasicBlock *> *&dominates, Bas
     // Translate dominator children
     // TODO: figure out if this can be done using rpo iteration
     for (size_t i = 0; i < dominates[curr->id].size; i++) {
-        rename_block(tctx, dominates, dominates[curr->id][i]);
+        rename_block(irc, dominates, dominates[curr->id][i]);
     }
 
     // Pop id stack for each variable
-    for (size_t i = 0; i < tctx.varInfoTab.size; i++) {
-        tctx.varInfoTab[i]->defStack.size -= numDefs[i];
+    for (size_t i = 0; i < irc.varInfoTab.size; i++) {
+        irc.varInfoTab[i]->defStack.size -= numDefs[i];
     }
     mem::c_free(numDefs);
 }
@@ -615,32 +600,44 @@ void print_cfg(CFG &cfg) {
 }
 
 void translate_function(CFG &cfg, Node *function) {
-    TranslationContext tctx{cfg};
-    tctx.declMap.init();
-    tctx.varInfoTab = {};
-    tctx.useDefTab = {};
+    GenIRContext irc{cfg};
+    irc.loopMap.init();
+    irc.declMap.init();
+    irc.varInfoTab = {};
+    irc.useDefTab = {};
 
     // Translate function body into control flow graph
-    cfg.entry = tctx.currBB = create_block(cfg);
+    cfg.entry = irc.currBB = create_block(cfg);
 
     // Assign vreg values to function arguments
     for (size_t i = 0; i < function->func.params.size; i++) {
         Node *argNode = function->func.params[i];
 
         Inst *arg = create_inst(Inst::Kind::kArg);
-        arg->dst = tctx.regCnt++;
+        arg->dst = irc.regCnt++;
         arg->arg.argNo = i;
-        add_inst(tctx, arg);
+        add_inst(irc, arg);
 
-        create_def(tctx, init_new_variable(tctx, argNode), arg);
+        create_def(irc, init_new_variable(irc, argNode), arg);
     }
 
     cfg.exit = create_empty_block();
-    translate_block(tctx, cfg.exit, function->func.body);
+    translate_block(irc, cfg.exit, function->func.body);
     cfg.exit->id = cfg.numBlocks++;
     cfg.exit->term.kind = Terminator::Kind::kRet;
 
-    init_cfg(cfg);
+    // Note that entry block always reaches every other block
+    // so only one dfs call is needed
+    // Sets up id to block map, predecessor, po and rpo
+    // Generate dominator tree
+    cfg.map = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    cfg.po = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    cfg.rpo = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    FixedBitField visited;
+    visited.init(cfg.numBlocks);
+    size_t toVisit = cfg.numBlocks;
+    dfs(cfg, cfg.entry, toVisit, visited);
+    cfg.idom = dom_tree(cfg);
 
     // Simple Dominance Frontier algorithm by Cooper et al.
     SparseSet *domf = mem::c_malloc<SparseSet>(cfg.numBlocks);
@@ -664,10 +661,10 @@ void translate_function(CFG &cfg, Node *function) {
     philist.init(cfg.numBlocks);
     SparseSet worklist;
     worklist.init(cfg.numBlocks);
-    for (size_t i = 0; i < tctx.varInfoTab.size; i++) {
+    for (size_t i = 0; i < irc.varInfoTab.size; i++) {
         worklist.clear();
         philist.clear();
-        VarInfo *var = tctx.varInfoTab[i];
+        VarInfo *var = irc.varInfoTab[i];
         for (size_t k = 0; k < var->defSites.size; k++) {
             worklist.try_add(var->defSites[k]);
         }
@@ -679,7 +676,7 @@ void translate_function(CFG &cfg, Node *function) {
                 if (!philist.contains(dfb)) {
                     Inst *phi = create_inst(Inst::Kind::kPhi);
                     phi->phi.varInfo = var;
-                    phi->dst = tctx.regCnt++;
+                    phi->dst = irc.regCnt++;
                     phi->phi.joins.init(bb->pred.size);
 
                     phi->next = bb->start;
@@ -709,17 +706,17 @@ void translate_function(CFG &cfg, Node *function) {
     for (auto bb = ++rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
         dominates[cfg.idom[(*bb)->id]->id].add(*bb);
     }
-    rename_block(tctx, dominates, cfg.entry);
+    rename_block(irc, dominates, cfg.entry);
     for (size_t i = 0; i < cfg.numBlocks; i++) {
         mem::c_free(dominates[i].data);
     }
-    mem::c_free(tctx.useDefTab.data);
+    mem::c_free(irc.useDefTab.data);
 
-    mem::c_free(tctx.declMap.table);
-    for (size_t i = 0; i < tctx.varInfoTab.size; i++) {
-        mem::p_free(tctx.varInfoTab[i]);
+    mem::c_free(irc.declMap.table);
+    for (size_t i = 0; i < irc.varInfoTab.size; i++) {
+        mem::p_free(irc.varInfoTab[i]);
     }
-    mem::c_free(tctx.varInfoTab.data);
+    mem::c_free(irc.varInfoTab.data);
 
     mem::p_free(function);
 }

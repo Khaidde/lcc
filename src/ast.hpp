@@ -6,7 +6,6 @@
 #include "list.hpp"
 #include "lstring.hpp"
 #include "token.hpp"
-#include "translate.hpp"
 
 namespace lcc {
 
@@ -148,18 +147,11 @@ struct IfNode {
     size_t branchLevel;
 };
 
-struct WhileInfo {
-    size_t branchLevel;
-    BasicBlock *entry;
-    BasicBlock *exit;
-};
-
 struct WhileNode {
     LStringView label;
     Node *cond;
     Node *loop;
-
-    WhileInfo *info;
+    size_t branchLevel;
 };
 
 struct RetNode {

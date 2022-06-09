@@ -1,7 +1,7 @@
 #ifndef LCC_OPTIMIZE_HPP
 #define LCC_OPTIMIZE_HPP
 
-#include "translate.hpp"
+#include "ir.hpp"
 
 namespace lcc {
 

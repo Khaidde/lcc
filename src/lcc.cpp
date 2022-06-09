@@ -6,12 +6,12 @@
 #include "analysis.hpp"
 #include "compilation.hpp"
 #include "diagnostic.hpp"
+#include "ir.hpp"
 #include "lstring.hpp"
 #include "optimize.hpp"
 #include "parse.hpp"
 #include "print.hpp"
 #include "scope.hpp"
-#include "translate.hpp"
 
 namespace lcc {
 

@@ -480,7 +480,7 @@ Result analyze_while(CompilationContext *cmp, Node *whilestmt) {
 
     scope_enter(cmp->scopeStack, whilestmt);
     if (analyze_block(cmp, whilestmt->whilestmt.loop)) return kError;
-    whilestmt->whilestmt.info->branchLevel = whilestmt->whilestmt.loop->block.branchLevel;
+    whilestmt->whilestmt.branchLevel = whilestmt->whilestmt.loop->block.branchLevel;
     if (scope_exit_check_unused(cmp)) return kError;
     return kAccept;
 }
@@ -565,8 +565,8 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 break;
             case NodeKind::kWhile:
                 if (analyze_while(cmp, stmt)) return kError;
-                if (stmt->whilestmt.info->branchLevel < block->block.branchLevel) {
-                    block->block.branchLevel = stmt->whilestmt.info->branchLevel;
+                if (stmt->whilestmt.branchLevel < block->block.branchLevel) {
+                    block->block.branchLevel = stmt->whilestmt.branchLevel;
                 }
                 break;
             case NodeKind::kRet:

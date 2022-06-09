@@ -167,8 +167,8 @@ void r_print_ast(Node *node, size_t depth) {
             if (node->ifstmt.alt) r_print_ast(node->ifstmt.alt, depth + 1);
             break;
         case NodeKind::kWhile:
-            if (node->whilestmt.info->branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
-                printf(" <level:%d>", node->whilestmt.info->branchLevel);
+            if (node->whilestmt.branchLevel + 1 != 0) {  // Check that branchLevel != SIZE_MAX
+                printf(" <level:%d>", node->whilestmt.branchLevel);
             }
             if (node->whilestmt.label.src) {
                 printf(" <%s>", lstr_raw_str(node->whilestmt.label));

@@ -1,5 +1,5 @@
-#ifndef LCC_TRANSLATE_HPP
-#define LCC_TRANSLATE_HPP
+#ifndef LCC_IR_HPP
+#define LCC_IR_HPP
 
 #include "compilation.hpp"
 #include "list.hpp"

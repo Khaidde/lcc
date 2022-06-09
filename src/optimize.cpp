@@ -50,6 +50,12 @@ void pass(CFG &cfg) {
             }
             curr = curr->next;
         }
+        if ((*bb)->term.kind == Terminator::Kind::kCond) {
+            Opd &predicate = (*bb)->term.cond.predicate;
+            if (predicate.kind == Opd::Kind::kReg) {
+                (*useCnt[predicate.regVal])++;
+            }
+        }
     }
 
     bool changed = true;

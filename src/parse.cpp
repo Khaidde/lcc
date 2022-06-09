@@ -495,12 +495,7 @@ Node *parse_while(Lexer *l) {
     assert(check_peek(l, TokenType::kWhile));
     Node *whilestmt = create_node(l, NodeKind::kWhile);
     whilestmt->whilestmt.label.src = nullptr;
-
-    debug("New WhileInfo\n");
-    whilestmt->whilestmt.info = mem::malloc<WhileInfo>();
-    whilestmt->whilestmt.info->branchLevel = (size_t)-1;
-    whilestmt->whilestmt.info->entry = nullptr;
-    whilestmt->whilestmt.info->exit = nullptr;
+    whilestmt->whilestmt.branchLevel = (size_t)-1;
 
     lex_next(l);  // next while
 
