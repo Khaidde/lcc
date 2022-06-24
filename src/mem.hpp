@@ -6,6 +6,8 @@
 #include <cstdint>
 
 #ifndef NDEBUG
+#include <typeinfo>
+
 #include "print.hpp"
 #endif
 
@@ -40,8 +42,10 @@ struct PoolAllocator {
         size_t metadata;
         Chunk *next;
     };
-
-    void *allocate() {
+#ifndef NDEBUG
+    const char *get_type_name() { return typeid(T).name(); }
+#endif
+    T *allocate() {
         if (!head) {
             head = (Chunk *)::malloc(kChunksPerBlock * kChunkSize);
 
@@ -53,17 +57,16 @@ struct PoolAllocator {
             curr->next = nullptr;
         }
 #ifndef NDEBUG
-        debug("Palloc %lld bytes(n=%d)\n", kChunkSize, ++numObjects);
+        debug("Palloc %s(n=%d)\n", get_type_name(), ++numObjects);
 #endif
-
         Chunk *chunk = head;
         head = head->next;
-        return chunk;
+        return (T *)chunk;
     }
 
-    void deallocate(void *ptr) {
+    void deallocate(T *ptr) {
 #ifndef NDEBUG
-        debug("Pfree %lld(n=%d)\n", kChunkSize, --numObjects);
+        debug("Pfree %s(n=%d)\n", get_type_name(), --numObjects);
         ((Chunk *)ptr)->metadata = 0xFEEEFEEE;
 #endif
         ((Chunk *)ptr)->next = head;
@@ -81,12 +84,12 @@ struct PoolAllocator {
 
 template <typename T>
 static inline T *p_malloc() {
-    return (T *)PoolAllocator<T>::pallocator.allocate();
+    return PoolAllocator<T>::pallocator.allocate();
 }
 
 template <typename T>
 static inline void p_free(T *ptr) {
-    PoolAllocator<T>::pallocator.deallocate((void *)ptr);
+    PoolAllocator<T>::pallocator.deallocate(ptr);
 }
 
 template <typename T>

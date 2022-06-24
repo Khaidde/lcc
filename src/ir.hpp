@@ -119,7 +119,6 @@ struct CFG {
     size_t numBlocks{0};
     BasicBlock *entry;
     BasicBlock *exit;
-    BasicBlock **map;
 
     BasicBlock **po;
     BasicBlock **rpo;

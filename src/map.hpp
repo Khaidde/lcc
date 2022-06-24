@@ -47,7 +47,13 @@ public:
         return internal_try_put(key, val);
     }
 
+    V *try_put(K &&key, V &&val) { return try_put(key, val); }
+
+    V *try_put(K &&key, V &val) { return try_put(key, val); }
+
     V *try_put(K &key, V &&val) { return try_put(key, val); }
+
+    V *operator[](K &&key) { return this[key]; }
 
     V *operator[](K &key) {
         size_t ndx = hash_func(key) % capacity;
@@ -136,6 +142,9 @@ template <typename T>
 bool ptr_equal(T *&ptr1, T *&ptr2) {
     return ptr1 == ptr2;
 }
+
+template <typename K, typename V>
+using LPtrMap = LMap<K *, V, ptr_hash, ptr_equal>;
 
 }  // namespace lcc
 

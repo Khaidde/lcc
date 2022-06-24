@@ -5,6 +5,18 @@
 
 namespace lcc {
 
+#ifndef NDEBUG
+template <>
+const char *mem::PoolAllocator<Inst>::get_type_name() {
+    return "Inst";
+}
+
+template <>
+const char *mem::PoolAllocator<BasicBlock>::get_type_name() {
+    return "BasicBlock";
+}
+#endif
+
 ListIterator<BasicBlock *> po_begin(CFG &cfg) { return {&cfg.po[0]}; }
 
 ListIterator<BasicBlock *> po_end(CFG &cfg) { return {&cfg.po[cfg.numBlocks]}; }
@@ -61,9 +73,9 @@ struct GenIRContext {
         BasicBlock *entry;
         BasicBlock *exit;
     };
-    LMap<Node *, LoopInfo, ptr_hash, ptr_equal> loopMap{};  // Maps ast while to loop entry and exit blocks
+    LPtrMap<Node, LoopInfo> loopMap{};  // Maps ast while to loop entry and exit blocks
 
-    LMap<Node *, VarInfo *, ptr_hash, ptr_equal> declMap{};  // Maps ast decl to variable info
+    LPtrMap<Node, VarInfo *> declMap{};  // Maps ast decl to variable info
     LList<VarInfo *> varInfoTab{};
     LList<RenameVarLL> useDefTab{};  // Keep track of uses and defs for each block in ssa variable renaming
 };
@@ -132,7 +144,7 @@ VarInfo *init_new_variable(GenIRContext &irc, Node *decl) {
 }
 
 BasicBlock *create_empty_block() {
-    BasicBlock *block = mem::malloc<BasicBlock>();
+    BasicBlock *block = mem::p_malloc<BasicBlock>();
     block->start = nullptr;
     block->end = nullptr;
     return block;
@@ -154,7 +166,7 @@ void translate_expr(GenIRContext &irc, Opd &out, Node *expr) {
         }
         case NodeKind::kName: {
             if (expr->name.ref->decl.isAssignToGlobal) {
-                todo("Use of global variable '%s'\n", lstr_raw_str(expr->name.ident));
+                todo("TODO: Use of global variable '%s'\n", lstr_raw_str(expr->name.ident));
                 assert(false);
             }
             out.kind = Opd::Kind::kReg;
@@ -426,20 +438,6 @@ BasicBlock **dom_tree(CFG &cfg) {
     return idom;
 }
 
-void dfs(CFG &cfg, BasicBlock *curr, size_t &toVisit, FixedBitField &visited) {
-    cfg.map[curr->id] = curr;
-    curr->pred = {};
-    for (auto succ = succ_begin(curr), end = succ_end(curr); succ != end; ++succ) {
-        if (!visited[(*succ)->id]) {
-            visited.set((*succ)->id);
-            dfs(cfg, *succ, toVisit, visited);
-        }
-        (*succ)->pred.add(curr);
-    }
-    cfg.po[cfg.numBlocks - toVisit] = curr;
-    cfg.rpo[--toVisit] = curr;
-}
-
 void rename_block(GenIRContext &irc, LList<BasicBlock *> *&dominates, BasicBlock *curr) {
     size_t *numDefs = mem::c_malloc<size_t>(irc.varInfoTab.size);
     for (size_t i = 0; i < irc.varInfoTab.size; i++) {
@@ -497,39 +495,6 @@ void print_opd(Opd &opd) {
     switch (opd.kind) {
         case Opd::Kind::kReg: printf("v%d", opd.regVal->dst); break;
         case Opd::Kind::kImm: printf("%d", opd.intval); break;
-    }
-}
-
-void r_print_block(BlockId &bid, BasicBlock *basicBlock) {
-    printf("b%d\n", basicBlock->id);
-
-    Inst *inst = basicBlock->start;
-    while (inst) {
-        printf("  ");
-        print_inst(inst);
-        inst = inst->next;
-    }
-    bid++;
-    switch (basicBlock->term.kind) {
-        case Terminator::Kind::kGoto: {
-            BasicBlock *exit = basicBlock->term.tgoto.target;
-            printf("  goto b%d\n", exit->id);
-            if (bid == exit->id) r_print_block(bid, exit);
-            break;
-        }
-        case Terminator::Kind::kCond: {
-            BasicBlock *then = basicBlock->term.cond.then;
-            BasicBlock *alt = basicBlock->term.cond.alt;
-
-            printf("  if ");
-            print_opd(basicBlock->term.cond.predicate);
-            printf(" -> b%d b%d\n", then->id, alt->id);
-
-            if (bid == then->id) r_print_block(bid, then);
-            if (bid == alt->id) r_print_block(bid, alt);
-            break;
-        }
-        case Terminator::Kind::kRet: printf("  ret\n"); break;
     }
 }
 
@@ -595,8 +560,33 @@ void print_inst(Inst *inst) {
 }
 
 void print_cfg(CFG &cfg) {
-    BlockId id{0};
-    r_print_block(id, cfg.entry);
+    for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
+        printf("b%d\n", (*bb)->id);
+
+        Inst *inst = (*bb)->start;
+        while (inst) {
+            printf("  ");
+            print_inst(inst);
+            inst = inst->next;
+        }
+        switch ((*bb)->term.kind) {
+            case Terminator::Kind::kGoto: {
+                BasicBlock *exit = (*bb)->term.tgoto.target;
+                printf("  goto b%d\n", exit->id);
+                break;
+            }
+            case Terminator::Kind::kCond: {
+                BasicBlock *then = (*bb)->term.cond.then;
+                BasicBlock *alt = (*bb)->term.cond.alt;
+
+                printf("  if ");
+                print_opd((*bb)->term.cond.predicate);
+                printf(" -> b%d b%d\n", then->id, alt->id);
+                break;
+            }
+            case Terminator::Kind::kRet: printf("  ret\n"); break;
+        }
+    }
 }
 
 void translate_function(CFG &cfg, Node *function) {
@@ -626,17 +616,73 @@ void translate_function(CFG &cfg, Node *function) {
     cfg.exit->id = cfg.numBlocks++;
     cfg.exit->term.kind = Terminator::Kind::kRet;
 
-    // Note that entry block always reaches every other block
-    // so only one dfs call is needed
-    // Sets up id to block map, predecessor, po and rpo
-    // Generate dominator tree
-    cfg.map = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
-    cfg.po = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
-    cfg.rpo = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    // Sets up id to block map, initial rpo and predecessors
+    LList<BasicBlock *> bbMap;
+    bbMap.init(cfg.numBlocks);
+    bbMap.size = cfg.numBlocks;
     FixedBitField visited;
     visited.init(cfg.numBlocks);
-    size_t toVisit = cfg.numBlocks;
-    dfs(cfg, cfg.entry, toVisit, visited);
+    BasicBlock **dfsStack = mem::c_malloc<BasicBlock *>(cfg.numBlocks - 1);
+    dfsStack[0] = cfg.entry;
+    cfg.entry->pred = {};
+    size_t stackSize = 1;
+    while (stackSize) {
+        BasicBlock *curr = dfsStack[--stackSize];
+        bbMap[curr->id] = curr;
+
+        for (auto succ = succ_begin(curr), end = succ_end(curr); succ != end; ++succ) {
+            if (!visited[(*succ)->id]) {
+                (*succ)->pred = {};
+                dfsStack[stackSize++] = *succ;
+                visited.set((*succ)->id);
+            }
+            (*succ)->pred.add(curr);
+        }
+    }
+
+    // Split critical edges, and initialize rpo/po
+    LList<BasicBlock *> rpo;
+    rpo.init(cfg.numBlocks);
+    for (size_t i = 0, numBlocks = cfg.numBlocks; i < numBlocks; i++) {
+        BasicBlock *src = bbMap[i];
+        rpo.add(src);
+
+        size_t succCnt = succ_count(src);
+        if (succCnt > 1) {
+            for (size_t i = 0; i < succCnt; i++) {
+                BasicBlock *tgt = src->term.succ[i];
+                if (tgt->pred.size > 1) {
+                    BasicBlock *newBlock = create_block(cfg);
+                    newBlock->term.kind = Terminator::Kind::kGoto;
+                    newBlock->term.tgoto.target = tgt;
+                    newBlock->pred.init(1);
+                    newBlock->pred.add(src);
+
+                    // Replace predecessor in target with newBlock
+                    size_t k = 0;
+                    for (; k < tgt->pred.size; k++) {
+                        if (tgt->pred[k] == src) {
+                            tgt->pred[k] = newBlock;
+                            break;
+                        }
+                    }
+                    assert(k != tgt->pred.size);
+
+                    src->term.succ[i] = newBlock;
+
+                    bbMap.add(newBlock);
+                    rpo.add(newBlock);
+                }
+            }
+        }
+    }
+    // Set up po to be the exact opposite order of rpo
+    cfg.po = mem::c_malloc<BasicBlock *>(cfg.numBlocks);
+    for (size_t i = 0; i < cfg.numBlocks; i++) {
+        cfg.po[i] = rpo[cfg.numBlocks - i - 1];
+    }
+    cfg.rpo = rpo.data;
+
     cfg.idom = dom_tree(cfg);
 
     // Simple Dominance Frontier algorithm by Cooper et al.
@@ -672,7 +718,7 @@ void translate_function(CFG &cfg, Node *function) {
             BlockId def = worklist.pop();
             for (size_t k = 0; k < domf[def].size; k++) {
                 BlockId dfb = domf[def].dense[k];
-                BasicBlock *bb = cfg.map[dfb];
+                BasicBlock *bb = bbMap[dfb];
                 if (!philist.contains(dfb)) {
                     Inst *phi = create_inst(Inst::Kind::kPhi);
                     phi->phi.varInfo = var;
@@ -697,6 +743,8 @@ void translate_function(CFG &cfg, Node *function) {
         mem::c_free(domf[i].dense);
         mem::c_free(domf[i].sparse);
     }
+
+    mem::c_free(bbMap.data);
 
     // Variable renaming
     LList<BasicBlock *> *dominates = mem::c_malloc<LList<BasicBlock *>>(cfg.numBlocks);

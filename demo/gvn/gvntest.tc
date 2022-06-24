@@ -10,9 +10,22 @@ gvn := :(a: u16) {
     f = c + d + 1
     e = a + d + 1
 
-    unused(e + f + b)
+    unused(e)
+    unused(f)
+    unused(b)
 }
 
+/*
+crit_edge := :() {
+    a := 1
+    if a {
+	a = 2
+    }
+    a = 3
+}
+*/
+
+/*
 no_gvn := :(a: u16) {
     b := a
     if a {
@@ -22,3 +35,4 @@ no_gvn := :(a: u16) {
     d := b + 5
     unused(c + d)
 }
+*/
