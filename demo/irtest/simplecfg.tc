@@ -16,7 +16,6 @@ funcWithArgs := :(a: u16, b: u16) {
 
 test := :() {
 
-/*
   a := 1
   if a + 2 {
     a = 3
@@ -27,13 +26,12 @@ test := :() {
   } else {
     a = 8
   }
-  while 9 {
+  while a {
     a = 10
-    if 11 {
+    if a {
       continue
     }
   }
-  */
 
   k := 10
   i := 20

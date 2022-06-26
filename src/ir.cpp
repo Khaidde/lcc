@@ -67,8 +67,6 @@ struct GenIRContext {
 
     BasicBlock *currBB{nullptr};
 
-    VReg regCnt{0};
-
     struct LoopInfo {
         BasicBlock *entry;
         BasicBlock *exit;
@@ -79,24 +77,6 @@ struct GenIRContext {
     LList<VarInfo *> varInfoTab{};
     LList<RenameVarLL> useDefTab{};  // Keep track of uses and defs for each block in ssa variable renaming
 };
-
-Inst *create_inst(Inst::Kind kind) {
-    Inst *inst = mem::p_malloc<Inst>();
-    inst->kind = kind;
-    inst->prev = nullptr;
-    inst->next = nullptr;
-    return inst;
-}
-
-void add_inst(GenIRContext &irc, Inst *inst) {
-    inst->prev = irc.currBB->end;
-    if (irc.currBB->start) {
-        irc.currBB->end->next = inst;
-    } else {
-        irc.currBB->start = inst;
-    }
-    irc.currBB->end = inst;
-}
 
 RenameVar *create_use_def(GenIRContext &irc) {
     while (irc.useDefTab.size <= irc.currBB->id) {
@@ -133,6 +113,7 @@ void create_def(GenIRContext &irc, VarInfo *varInfo, Inst *ref) {
 VarInfo *init_new_variable(GenIRContext &irc, Node *decl) {
     VarInfo *info = mem::p_malloc<VarInfo>();
     info->varid = irc.varInfoTab.size;
+
     info->defSites = {};
     info->defStack = {};
     info->defSites.add(irc.currBB->id);
@@ -156,11 +137,11 @@ BasicBlock *create_block(CFG &cfg) {
     return block;
 }
 
-void translate_expr(GenIRContext &irc, Opd &out, Node *expr) {
+void translate_expr(GenIRContext &irc, Opd &dstOpd, Node *expr) {
     switch (expr->kind) {
         case NodeKind::kIntLit: {
-            out.kind = Opd::Kind::kImm;
-            out.intval = expr->intLit.intVal;
+            dstOpd.kind = Opd::Kind::kImm;
+            dstOpd.intval = expr->intLit.intVal;
             mem::p_free(expr);
             break;
         }
@@ -169,10 +150,10 @@ void translate_expr(GenIRContext &irc, Opd &out, Node *expr) {
                 todo("TODO: Use of global variable '%s'\n", lstr_raw_str(expr->name.ident));
                 assert(false);
             }
-            out.kind = Opd::Kind::kReg;
-            out.regVal = nullptr;
+            dstOpd.kind = Opd::Kind::kReg;
+            dstOpd.regVal = nullptr;
             VarInfo *info = (*irc.declMap[expr->name.ref]);
-            create_use(irc, info, &out.regVal);
+            create_use(irc, info, &dstOpd.regVal);
             mem::p_free(expr);
             break;
         }
@@ -181,19 +162,11 @@ void translate_expr(GenIRContext &irc, Opd &out, Node *expr) {
             bin->bin.op = expr->infix.op;
             translate_expr(irc, bin->bin.left, expr->infix.left);
             translate_expr(irc, bin->bin.right, expr->infix.right);
+            dstOpd.kind = Opd::Kind::kReg;
+            dstOpd.regVal = bin;
+            bin->dst = irc.cfg.nextReg++;
+            add_end_inst(irc.currBB, bin);
             mem::p_free(expr);
-            if (bin->bin.left.kind == Opd::Kind::kImm && bin->bin.right.kind == Opd::Kind::kImm) {
-                out.kind = Opd::Kind::kImm;
-                switch (expr->infix.op) {
-                    case TokenType::kAdd: out.intval = bin->bin.left.intval + bin->bin.right.intval; break;
-                    default: assert(false && "TODO: unimplemented constant folding for infix operation");
-                }
-            } else {
-                out.kind = Opd::Kind::kReg;
-                out.regVal = bin;
-                bin->dst = irc.regCnt++;
-                add_inst(irc, bin);
-            }
             break;
         }
         default: assert(false && "TODO: no translation implemented for expression kind"); unreachable();
@@ -227,8 +200,8 @@ void translate_decl(GenIRContext &irc, Node *decl) {
                 mem::p_free(declInst);
                 declInst = srcInst;
             } else {
-                declInst->dst = irc.regCnt++;
-                add_inst(irc, declInst);
+                declInst->dst = irc.cfg.nextReg++;
+                add_end_inst(irc.currBB, declInst);
             }
             create_def(irc, info, declInst);
         }
@@ -308,13 +281,17 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
             }
             case NodeKind::kCall: {
                 Inst *call = create_inst(Inst::Kind::kCall);
+                call->dst = 0;
+                // TODO: handle complex callee cases
+                assert(stmt->call.callee->kind == NodeKind::kName);
+                call->call.cfg = irc.cfg.globalIR->funcMap[stmt->call.callee->name.ident];
                 call->call.args.init(stmt->call.args.size);
                 for (size_t i = 0; i < stmt->call.args.size; i++) {
                     Node *arg = stmt->call.args[i];
                     call->call.args.add({});
                     translate_expr(irc, call->call.args[i], arg);
                 }
-                add_inst(irc, call);
+                add_end_inst(irc.currBB, call);
                 break;
             }
             case NodeKind::kIf: {
@@ -364,11 +341,9 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
             }
             case NodeKind::kRet: {
                 if (stmt->ret.value) {
-                    Inst *retValue = create_inst(Inst::Kind::kAssign);
-                    translate_expr(irc, retValue->assign.src, stmt->ret.value);
-                    // TODO: minimize excess copy propagation
-                    retValue->dst = irc.regCnt++;
-                    add_inst(irc, retValue);
+                    irc.cfg.exit->term.ret.args.add({});
+                    irc.cfg.exit->term.ret.args.last().bb = irc.currBB;
+                    translate_expr(irc, irc.cfg.exit->term.ret.args.last().opd, stmt->ret.value);
                 }
 
                 irc.currBB->term.kind = Terminator::Kind::kGoto;
@@ -473,13 +448,28 @@ void rename_block(GenIRContext &irc, LList<BasicBlock *> *&dominates, BasicBlock
         Inst *phi = (*succ)->start;
         while (phi && phi->kind == Inst::Kind::kPhi) {
             VarInfo *info = phi->phi.varInfo;
-            phi->phi.joins.add({info->defStack.last(), curr});
+
+            if (!info->defStack.size) {
+                /*
+                 * Phi node may be mistakenly placed before any definition of
+                 * the variable it merges. Detect if variable has not been defined
+                 * and if so, remove the phi node.
+                 *
+                 * Example scenario:
+                 * while 1 {
+                 *   b := 3
+                 * }
+                 * TODO prove that this can always be done
+                 */
+                free_inst(phi);
+            } else {
+                phi->phi.joins.add({info->defStack.last(), curr});
+            }
             phi = phi->next;
         }
     }
 
     // Translate dominator children
-    // TODO: figure out if this can be done using rpo iteration
     for (size_t i = 0; i < dominates[curr->id].size; i++) {
         rename_block(irc, dominates, dominates[curr->id][i]);
     }
@@ -491,6 +481,74 @@ void rename_block(GenIRContext &irc, LList<BasicBlock *> *&dominates, BasicBlock
     mem::c_free(numDefs);
 }
 
+}  // namespace
+
+const char *currentPassAnnotation = "";
+
+Inst *create_inst(Inst::Kind kind) {
+    Inst *inst = mem::p_malloc<Inst>();
+    inst->kind = kind;
+#ifndef NDEBUG
+    inst->annotation = nullptr;
+#endif
+    inst->block = nullptr;
+    inst->prev = nullptr;
+    inst->next = nullptr;
+    return inst;
+}
+
+void add_start_inst(BasicBlock *block, Inst *inst) {
+#ifndef NDEBUG
+    inst->annotation = currentPassAnnotation;
+#endif
+    inst->block = block;
+    inst->next = block->start;
+    if (block->end) {
+        block->start->prev = inst;
+    } else {
+        block->end = inst;
+    }
+    block->start = inst;
+}
+
+void add_end_inst(BasicBlock *block, Inst *inst) {
+#ifndef NDEBUG
+    inst->annotation = currentPassAnnotation;
+#endif
+    inst->block = block;
+    inst->prev = block->end;
+    if (block->start) {
+        block->end->next = inst;
+    } else {
+        block->start = inst;
+    }
+    block->end = inst;
+}
+
+void free_inst(Inst *inst) {
+    switch (inst->kind) {
+        case Inst::Kind::kCall: mem::c_free(inst->call.args.data); break;
+        case Inst::Kind::kPhi: mem::c_free(inst->phi.joins.data); break;
+        default: break;
+    }
+    if (inst->prev) {
+        inst->prev->next = inst->next;
+    } else if (inst->block) {
+        inst->block->start = inst->next;
+    }
+
+    if (inst->next) {
+        inst->next->prev = inst->prev;
+    } else if (inst->block) {
+        inst->block->end = inst->prev;
+    }
+    mem::p_free(inst);
+}
+
+namespace {
+
+constexpr size_t kPrintWhitespace = 10;
+
 void print_opd(Opd &opd) {
     switch (opd.kind) {
         case Opd::Kind::kReg: printf("v%d", opd.regVal->dst); break;
@@ -500,39 +558,27 @@ void print_opd(Opd &opd) {
 
 }  // namespace
 
-void remove_inst(BasicBlock *block, Inst *inst) {
-    if (inst->prev) {
-        inst->prev->next = inst->next;
-    } else {
-        block->start = inst->next;
-    }
-    if (inst->next) {
-        inst->next->prev = inst->prev;
-    } else {
-        block->end = inst->prev;
-    }
-    mem::p_free(inst);
-}
-
 void print_inst(Inst *inst) {
-    if (inst->kind != Inst::Kind::kCall) printf("v%d = ", inst->dst);
+#ifndef NDEBUG
+    printf("[ %*.*s ]   ", kPrintWhitespace, kPrintWhitespace, inst->annotation ? inst->annotation : "");
+#endif
+
+    if (inst->dst) printf("v%-2d = ", inst->dst);
     switch (inst->kind) {
         case Inst::Kind::kPhi:
             printf("phi(");
             for (size_t k = 0; k < inst->phi.joins.size; k++) {
                 PhiInst::Arg &phiArg = inst->phi.joins[k];
-                printf("v%d:%d", phiArg.ref->dst, phiArg.bb->id);
+                printf("v%-2d[B%-2d]", phiArg.ref->dst, phiArg.bb->id);
                 if (k < inst->phi.joins.size - 1) {
                     printf(", ");
                 }
             }
-            printf(")\n");
+            printf(")");
+
             break;
-        case Inst::Kind::kArg: printf("<arg %d>\n", inst->arg.argNo); break;
-        case Inst::Kind::kAssign:
-            print_opd(inst->assign.src);
-            printf("\n");
-            break;
+        case Inst::Kind::kArg: printf("<arg %d>", inst->arg.argNo); break;
+        case Inst::Kind::kAssign: print_opd(inst->assign.src); break;
         case Inst::Kind::kBin:
             const char *opstr;
             switch (inst->bin.op) {
@@ -544,52 +590,89 @@ void print_inst(Inst *inst) {
             print_opd(inst->bin.left);
             printf(", ");
             print_opd(inst->bin.right);
-            printf(")\n");
+            printf(")");
             break;
         case Inst::Kind::kCall:
-            printf("<call>(");
+            printf("%s(", lstr_raw_str(inst->call.cfg->ident));
             for (size_t i = 0; i < inst->call.args.size; i++) {
                 print_opd(inst->call.args[i]);
                 if (i + 1 < inst->call.args.size) {
                     printf(", ");
                 }
             }
-            printf(")\n");
+            printf(")");
             break;
     }
 }
 
+void start_pass(const char *annotation) {
+#ifndef NDEBUG
+    currentPassAnnotation = annotation;
+#endif
+}
+
+void annotate(Inst *inst) {
+#ifndef NDEBUG
+    inst->annotation = currentPassAnnotation;
+#endif
+}
+
 void print_cfg(CFG &cfg) {
     for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
-        printf("b%d\n", (*bb)->id);
+        printf("%*s    B%d\n", kPrintWhitespace, "", (*bb)->id);
 
         Inst *inst = (*bb)->start;
         while (inst) {
-            printf("  ");
             print_inst(inst);
+            printf("\n");
             inst = inst->next;
         }
+
+#ifndef NDEBUG
+        printf("[ %*s ]   ", kPrintWhitespace, " ");
+#endif
         switch ((*bb)->term.kind) {
             case Terminator::Kind::kGoto: {
                 BasicBlock *exit = (*bb)->term.tgoto.target;
-                printf("  goto b%d\n", exit->id);
+                printf("=> B%d\n", exit->id);
                 break;
             }
             case Terminator::Kind::kCond: {
                 BasicBlock *then = (*bb)->term.cond.then;
                 BasicBlock *alt = (*bb)->term.cond.alt;
 
-                printf("  if ");
+                printf("=> B%d:B%d [?", then->id, alt->id);
                 print_opd((*bb)->term.cond.predicate);
-                printf(" -> b%d b%d\n", then->id, alt->id);
+                printf("]\n");
                 break;
             }
-            case Terminator::Kind::kRet: printf("  ret\n"); break;
+            case Terminator::Kind::kRet:
+                printf("ret phi(");
+                for (size_t i = 0; i < (*bb)->term.ret.args.size; i++) {
+                    RetTerminator::Arg &retArg = (*bb)->term.ret.args[i];
+                    print_opd(retArg.opd);
+                    printf("[B%d]", retArg.bb->id);
+                    if (i < (*bb)->term.ret.args.size - 1) {
+                        printf(", ");
+                    }
+                }
+                printf(")\n");
+                break;
         }
     }
 }
 
-void translate_function(CFG &cfg, Node *function) {
+CFG &generate_cfg(IR &globalIR, Node *functionDecl) {
+    assert(functionDecl->kind == NodeKind::kDecl);
+
+    start_pass("");
+
+    globalIR.funcMap.try_put(functionDecl->decl.lval->name.ident, {});
+    CFG *cfgPtr = globalIR.funcMap[functionDecl->decl.lval->name.ident];
+    CFG &cfg = *cfgPtr;
+    cfg.ident = functionDecl->decl.lval->name.ident;
+    cfg.globalIR = &globalIR;
+
     GenIRContext irc{cfg};
     irc.loopMap.init();
     irc.declMap.init();
@@ -600,19 +683,21 @@ void translate_function(CFG &cfg, Node *function) {
     cfg.entry = irc.currBB = create_block(cfg);
 
     // Assign vreg values to function arguments
-    for (size_t i = 0; i < function->func.params.size; i++) {
-        Node *argNode = function->func.params[i];
+    for (size_t i = 0; i < functionDecl->decl.rval->func.params.size; i++) {
+        Node *argNode = functionDecl->decl.rval->func.params[i];
 
         Inst *arg = create_inst(Inst::Kind::kArg);
-        arg->dst = irc.regCnt++;
+        arg->dst = cfg.nextReg++;
         arg->arg.argNo = i;
-        add_inst(irc, arg);
+        add_end_inst(irc.currBB, arg);
 
         create_def(irc, init_new_variable(irc, argNode), arg);
     }
 
     cfg.exit = create_empty_block();
-    translate_block(irc, cfg.exit, function->func.body);
+    cfg.exit->term.ret.args = {};
+
+    translate_block(irc, cfg.exit, functionDecl->decl.rval->func.body);
     cfg.exit->id = cfg.numBlocks++;
     cfg.exit->term.kind = Terminator::Kind::kRet;
 
@@ -722,11 +807,10 @@ void translate_function(CFG &cfg, Node *function) {
                 if (!philist.contains(dfb)) {
                     Inst *phi = create_inst(Inst::Kind::kPhi);
                     phi->phi.varInfo = var;
-                    phi->dst = irc.regCnt++;
+                    phi->dst = cfg.nextReg++;
                     phi->phi.joins.init(bb->pred.size);
 
-                    phi->next = bb->start;
-                    bb->start = phi;
+                    add_start_inst(bb, phi);
 
                     philist.try_add(dfb);
 
@@ -766,7 +850,9 @@ void translate_function(CFG &cfg, Node *function) {
     }
     mem::c_free(irc.varInfoTab.data);
 
-    mem::p_free(function);
+    mem::p_free(functionDecl->decl.rval);
+
+    return cfg;
 }
 
 }  // namespace lcc

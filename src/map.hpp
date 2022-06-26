@@ -23,9 +23,13 @@ public:
 
     void init(size_t newCapacity) {
         capacity = newCapacity;
+        table = mem::c_malloc<Entry>(capacity);
+        clear();
+    }
+
+    void clear() {
         size = 0;
         maxPSL = 0;
-        table = mem::c_malloc<Entry>(capacity);
         for (size_t i = 0; i < capacity; i++) {
             table[i].psl = 0;
         }
@@ -53,7 +57,7 @@ public:
 
     V *try_put(K &key, V &&val) { return try_put(key, val); }
 
-    V *operator[](K &&key) { return this[key]; }
+    V *operator[](K &&key) { return (*this)[key]; }
 
     V *operator[](K &key) {
         size_t ndx = hash_func(key) % capacity;

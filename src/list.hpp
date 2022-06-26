@@ -17,6 +17,8 @@ struct ListIterator {
         return *this;
     }
 
+    friend bool operator==(const ListIterator &a, const ListIterator &b) { return a.curr == b.curr; }
+
     friend bool operator!=(const ListIterator &a, const ListIterator &b) { return a.curr != b.curr; }
 
     T *curr;

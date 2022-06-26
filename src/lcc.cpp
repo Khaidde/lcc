@@ -330,6 +330,28 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     return ErrCode::kSuccess;
 }
 
+void optimize_package(IR &globalIR, Package *package) {
+    for (size_t i = 0; i < package->globalDeclList.size; i++) {
+        Node *decl = package->globalDeclList[i]->declNode;
+        if (decl->decl.isExtern) {
+            if (decl->decl.resolvedTy->kind == TypeKind::kFuncTy) {
+                CFG cfg;
+                cfg.globalIR = &globalIR;
+                cfg.ident = decl->decl.lval->name.ident;
+                globalIR.funcMap.try_put(cfg.ident, cfg);
+            }
+            continue;
+        }
+        assert(decl->decl.rval);
+        if (decl->decl.rval->kind != NodeKind::kFunc) continue;
+        if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
+            start_pass("");
+            CFG &cfg = generate_cfg(globalIR, decl);
+            optimize(cfg);
+        }
+    }
+}
+
 }  // namespace
 
 ErrCode command_line(int argc, char **argv) {
@@ -373,17 +395,10 @@ ErrCode compile(const char *path) {
     }
 
     // Translation into cfg and intraprocedural optimizations
-    Package *package = *cmp.packageMap[root];
-    for (size_t i = 0; i < package->globalDeclList.size; i++) {
-        Node *decl = package->globalDeclList[i]->declNode;
-        if (!decl->decl.rval) continue;
-        if (decl->decl.rval->kind != NodeKind::kFunc) continue;
-        if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
-            CFG cfg;
-            translate_function(cfg, decl->decl.rval);
-            optimize(cfg);
-        }
-    }
+    IR globalIR;
+    globalIR.funcMap.init();
+    optimize_package(globalIR, cmp.preloadPkg);
+    optimize_package(globalIR, *cmp.packageMap[root]);
 
     return ErrCode::kSuccess;
 }

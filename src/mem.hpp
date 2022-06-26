@@ -6,9 +6,14 @@
 #include <cstdint>
 
 #ifndef NDEBUG
+
 #include <typeinfo>
 
 #include "print.hpp"
+#define DBG_MEM 0
+
+#else
+#define DBG_MEM 0
 #endif
 
 namespace lcc {
@@ -56,7 +61,7 @@ struct PoolAllocator {
             }
             curr->next = nullptr;
         }
-#ifndef NDEBUG
+#if DBG_MEM
         debug("Palloc %s(n=%d)\n", get_type_name(), ++numObjects);
 #endif
         Chunk *chunk = head;
@@ -65,7 +70,7 @@ struct PoolAllocator {
     }
 
     void deallocate(T *ptr) {
-#ifndef NDEBUG
+#if DBG_MEM
         debug("Pfree %s(n=%d)\n", get_type_name(), --numObjects);
         ((Chunk *)ptr)->metadata = 0xFEEEFEEE;
 #endif
@@ -77,7 +82,7 @@ struct PoolAllocator {
     static constexpr size_t kChunksPerBlock{8};
     static constexpr size_t kChunkSize{align(sizeof(T))};
     Chunk *head{nullptr};
-#ifndef NDEBUG
+#if DBG_MEM
     size_t numObjects{0};
 #endif
 };

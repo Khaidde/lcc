@@ -9,6 +9,7 @@ namespace lcc {
 
 struct BasicBlock;
 
+using CFGId = size_t;
 using BlockId = size_t;
 using VReg = size_t;
 using VarId = size_t;
@@ -56,9 +57,12 @@ struct BinInst {
     Opd right;
 };
 
+struct CFG;
+
 struct CallInst {
     // TODO: used right now primarily to mark persistent values
     // Used to disable certain optimizations form going haywire (DCE)
+    CFG *cfg;
     LList<Opd> args;
 };
 
@@ -71,6 +75,10 @@ struct Inst {
         kCall,
     } kind;
 
+#ifndef NDEBUG
+    const char *annotation;
+#endif
+    BasicBlock *block;
     Inst *prev;
     Inst *next;
     VReg dst;
@@ -93,6 +101,14 @@ struct CondTerminator {
     Opd predicate;  // Only relevant for conditional terminator
 };
 
+struct RetTerminator {
+    struct Arg {
+        Opd opd;
+        BasicBlock *bb;
+    };
+    LList<Arg> args;
+};
+
 struct Terminator {
     enum Kind {
         kGoto,
@@ -103,6 +119,7 @@ struct Terminator {
     union {
         GotoTerminator tgoto;
         CondTerminator cond;
+        RetTerminator ret;
         BasicBlock *succ[2];
     };
 };
@@ -115,7 +132,14 @@ struct BasicBlock {
     Terminator term;
 };
 
+struct IR;
+
 struct CFG {
+    IR *globalIR;
+    LStringView ident;
+
+    VReg nextReg{1};
+
     size_t numBlocks{0};
     BasicBlock *entry;
     BasicBlock *exit;
@@ -124,6 +148,10 @@ struct CFG {
     BasicBlock **rpo;
 
     BasicBlock **idom;
+};
+
+struct IR {
+    LMap<LStringView, CFG, lstr_hash, lstr_equal> funcMap;
 };
 
 ListIterator<BasicBlock *> po_begin(CFG &cfg);
@@ -139,13 +167,19 @@ size_t succ_count(BasicBlock *block);
 ListIterator<BasicBlock *> succ_begin(BasicBlock *block);
 ListIterator<BasicBlock *> succ_end(BasicBlock *block);
 
-void remove_inst(BasicBlock *block, Inst *inst);
+Inst *create_inst(Inst::Kind kind);
+void add_start_inst(BasicBlock *block, Inst *inst);
+void add_end_inst(BasicBlock *block, Inst *inst);
+void free_inst(Inst *inst);
 
 void print_inst(Inst *inst);
 
+void start_pass(const char *annotation);
+void annotate(Inst *inst);
+
 void print_cfg(CFG &cfg);
 
-void translate_function(CFG &cfg, Node *function);
+CFG &generate_cfg(IR &globalIR, Node *functionDecl);
 
 }  // namespace lcc
 

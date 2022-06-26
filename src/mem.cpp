@@ -16,7 +16,9 @@ ArenaAllocator::Block *ArenaAllocator::create_block() {
     newBlock->header.prevPtr = 0;
     newBlock->header.offset = 0;
     newBlock->header.next = nullptr;
+#if DBG_MEM
     debug("Allocating arena block(ptr=%p,size=%lld+%lld)\n", newBlock, sizeof(Block::header), kBlockDataSize);
+#endif
     if (head) {
         Block *curr = head;
         while (curr && curr->header.next) {
@@ -48,7 +50,9 @@ void *ArenaAllocator::malloc(size_t bytes) {
         assert(bytes <= kBlockDataSize && "Cannot allocate more bytes than arena block size");
         bestFit = create_block();
     }
+#if DBG_MEM
     debug("Malloc offset=%lld: %lld bytes\n", bestFit->header.offset, bytes);
+#endif
 
     void *ptr = &bestFit->buffer[bestFit->header.offset];
     bestFit->header.prevPtr = (intptr_t)ptr;
@@ -73,7 +77,9 @@ void *ArenaAllocator::realloc(void *ptr, size_t prevSize, size_t newSize) {
         if (curr->header.prevPtr == (intptr_t)ptr) {
             if (curr->header.offset + (alignedNewSize - alignedPrevSize) <= kBlockDataSize) {
                 curr->header.offset += (alignedNewSize - alignedPrevSize);
+#if DBG_MEM
                 debug("Fast realloc %lld bytes -> %lld bytes\n", prevSize, newSize);
+#endif
                 return ptr;
             }
         }
@@ -87,7 +93,9 @@ void *ArenaAllocator::realloc(void *ptr, size_t prevSize, size_t newSize) {
         assert(alignedNewSize <= kBlockDataSize && "Cannot reallocate more bytes than arena block size");
         bestFit = create_block();
     }
+#if DBG_MEM
     debug("Slow realloc %lld bytes -> %lld bytes\n", prevSize, newSize);
+#endif
 
     void *oldPtr = ptr;
     ptr = &bestFit->buffer[bestFit->header.offset];

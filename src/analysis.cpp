@@ -530,10 +530,10 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                 } else {
                     assert(!stmt->decl.staticTy);
                     Type *lType = resolve_type(cmp, stmt->decl.lval);
+                    if (!lType) return kError;
                     if (stmt->decl.lval->kind == NodeKind::kName && stmt->decl.lval->name.ref->decl.isGlobal) {
                         stmt->decl.isAssignToGlobal = true;
                     }
-                    if (!lType) return kError;
                     if (lType->kind == TypeKind::kType) {
                         dx_err(at_node(cmp->currFile->finfo, stmt->decl.lval), "Cannot reassign to a type alias\n");
                         return kError;
