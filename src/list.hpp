@@ -118,6 +118,23 @@ struct SparseSet {
 };
 
 template <typename T>
+struct LArray {
+    void init(size_t sz) {
+        assert(sz && "Size of array must be positive");
+        data = mem::c_malloc<T>(sz);
+        size = sz;
+    }
+
+    T &operator[](size_t i) {
+        assert(0 <= i && i < size);
+        return data[i];
+    }
+
+    T *data{nullptr};
+    size_t size{0};
+};
+
+template <typename T>
 struct LList {
     void init(size_t initialSize) {
         assert(initialSize && "Initial size of list must be positive");
@@ -135,6 +152,11 @@ struct LList {
 
     void resize() {
         capacity = (capacity << 1) - (capacity >> 1) + 8;
+        data = mem::c_realloc<T>(data, capacity);
+    }
+
+    void compact() {
+        capacity = size;
         data = mem::c_realloc<T>(data, capacity);
     }
 

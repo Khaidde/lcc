@@ -29,7 +29,10 @@ void reset_print_color() {
         va_end(ap);                                                    \
     } while (0)
 
-void unreachable() { exit(1); }
+void unreachable() {
+    printf("\nUNREACHABLE\n");
+    exit(1);
+}
 
 void err(const char *format, ...) { DEFINE_PRINT(stderr, "err", kAnsiColorRed); }
 

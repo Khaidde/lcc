@@ -124,6 +124,13 @@ VarInfo *init_new_variable(GenIRContext &irc, Node *decl) {
     return info;
 }
 
+void init_terminator(Terminator::Kind kind, BasicBlock *block) {
+    block->term.kind = kind;
+#ifndef NDEBUG
+    block->term.annotation = "";
+#endif
+}
+
 BasicBlock *create_empty_block() {
     BasicBlock *block = mem::p_malloc<BasicBlock>();
     block->start = nullptr;
@@ -135,6 +142,25 @@ BasicBlock *create_block(CFG &cfg) {
     BasicBlock *block = create_empty_block();
     block->id = cfg.numBlocks++;
     return block;
+}
+
+void translate_expr(GenIRContext &irc, Opd &dstOpd, Node *expr);
+
+Inst *translate_call(GenIRContext &irc, Node *call) {
+    assert(call->kind == NodeKind::kCall);
+    assert(call->call.callee->kind == NodeKind::kName);
+
+    Inst *callInst = create_inst(Inst::Kind::kCall);
+    // TODO: handle complex callee cases
+    callInst->call.cfg = irc.cfg.globalIR->funcMap[call->call.callee->name.ident];
+    callInst->call.args.init(call->call.args.size);
+    for (size_t i = 0; i < call->call.args.size; i++) {
+        Opd &arg = callInst->call.args[i];
+        translate_expr(irc, arg, call->call.args[i]);
+    }
+    add_end_inst(irc.currBB, callInst);
+    mem::p_free(call);
+    return callInst;
 }
 
 void translate_expr(GenIRContext &irc, Opd &dstOpd, Node *expr) {
@@ -169,6 +195,13 @@ void translate_expr(GenIRContext &irc, Opd &dstOpd, Node *expr) {
             mem::p_free(expr);
             break;
         }
+        case NodeKind::kCall: {
+            Inst *call = translate_call(irc, expr);
+            call->dst = irc.cfg.nextReg++;
+            dstOpd.kind = Opd::Kind::kReg;
+            dstOpd.regVal = call;
+            break;
+        }
         default: assert(false && "TODO: no translation implemented for expression kind"); unreachable();
     }
 }
@@ -191,11 +224,12 @@ void translate_decl(GenIRContext &irc, Node *decl) {
         if (decl->decl.rval) {
             Inst *declInst = create_inst(Inst::Kind::kAssign);
             // Must calculate before translate_expr because decl->decl.rval is freed
-            bool isInfix = decl->decl.rval->kind == NodeKind::kInfix;
+            bool isInfixOrCall = decl->decl.rval->kind == NodeKind::kInfix;
+            isInfixOrCall |= decl->decl.rval->kind == NodeKind::kCall;
             translate_expr(irc, declInst->assign.src, decl->decl.rval);
 
             // Minimize copies of temporaries when expression was infix node
-            if (isInfix && declInst->assign.src.kind == Opd::Kind::kReg) {
+            if (isInfixOrCall && declInst->assign.src.kind == Opd::Kind::kReg) {
                 Inst *srcInst = declInst->assign.src.regVal;
                 mem::p_free(declInst);
                 declInst = srcInst;
@@ -214,7 +248,7 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block);
 
 void translate_if(GenIRContext &irc, BasicBlock *entry, BasicBlock *exit, Node *ifstmt) {
     for (;;) {
-        entry->term.kind = Terminator::Kind::kCond;
+        init_terminator(Terminator::Kind::kCond, entry);
 
         translate_expr(irc, entry->term.cond.predicate, ifstmt->ifstmt.cond);
         if (entry->term.cond.predicate.kind == Opd::Kind::kImm) {
@@ -249,7 +283,7 @@ void translate_if(GenIRContext &irc, BasicBlock *entry, BasicBlock *exit, Node *
 }
 
 void translate_while(GenIRContext &irc, BasicBlock *entry, BasicBlock *exit, Node *whilestmt) {
-    entry->term.kind = Terminator::Kind::kCond;
+    init_terminator(Terminator::Kind::kCond, entry);
     entry->term.cond.alt = exit;
 
     // TODO optimization where while statement of condition 0/false is culled
@@ -262,7 +296,7 @@ void translate_while(GenIRContext &irc, BasicBlock *entry, BasicBlock *exit, Nod
     BasicBlock *loop = irc.currBB = create_block(irc.cfg);
     entry->term.cond.then = loop;
 
-    loop->term.kind = Terminator::Kind::kGoto;
+    init_terminator(Terminator::Kind::kGoto, loop);
     loop->term.tgoto.target = entry;
 
     translate_block(irc, entry, whilestmt->whilestmt.loop);
@@ -280,18 +314,8 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
                 break;
             }
             case NodeKind::kCall: {
-                Inst *call = create_inst(Inst::Kind::kCall);
+                Inst *call = translate_call(irc, stmt);
                 call->dst = 0;
-                // TODO: handle complex callee cases
-                assert(stmt->call.callee->kind == NodeKind::kName);
-                call->call.cfg = irc.cfg.globalIR->funcMap[stmt->call.callee->name.ident];
-                call->call.args.init(stmt->call.args.size);
-                for (size_t i = 0; i < stmt->call.args.size; i++) {
-                    Node *arg = stmt->call.args[i];
-                    call->call.args.add({});
-                    translate_expr(irc, call->call.args[i], arg);
-                }
-                add_end_inst(irc.currBB, call);
                 break;
             }
             case NodeKind::kIf: {
@@ -312,7 +336,7 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
             case NodeKind::kWhile: {
                 if (irc.currBB->start) {
                     BasicBlock *cond = create_block(irc.cfg);
-                    irc.currBB->term.kind = Terminator::Kind::kGoto;
+                    init_terminator(Terminator::Kind::kGoto, irc.currBB);
                     irc.currBB->term.tgoto.target = cond;
                     irc.currBB = cond;
                 }
@@ -330,7 +354,7 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
                 break;
             }
             case NodeKind::kLoopBr: {
-                irc.currBB->term.kind = Terminator::Kind::kGoto;
+                init_terminator(Terminator::Kind::kGoto, irc.currBB);
                 if (stmt->loopbr.isBreak) {
                     irc.currBB->term.tgoto.target = irc.loopMap[stmt->loopbr.ref]->exit;
                 } else {
@@ -346,7 +370,7 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
                     translate_expr(irc, irc.cfg.exit->term.ret.args.last().opd, stmt->ret.value);
                 }
 
-                irc.currBB->term.kind = Terminator::Kind::kGoto;
+                init_terminator(Terminator::Kind::kGoto, irc.currBB);
                 irc.currBB->term.tgoto.target = irc.cfg.exit;
                 mem::p_free(block);
                 return;
@@ -354,7 +378,7 @@ void translate_block(GenIRContext &irc, BasicBlock *exit, Node *block) {
             default: assert(false && "TODO: no translation implemented for statement kind"); unreachable();
         }
     }
-    irc.currBB->term.kind = Terminator::Kind::kGoto;
+    init_terminator(Terminator::Kind::kGoto, irc.currBB);
     irc.currBB->term.tgoto.target = exit;
     mem::p_free(block);
 }
@@ -611,9 +635,15 @@ void start_pass(const char *annotation) {
 #endif
 }
 
-void annotate(Inst *inst) {
+void annotate_inst(Inst *inst) {
 #ifndef NDEBUG
     inst->annotation = currentPassAnnotation;
+#endif
+}
+
+void annotate_term(Terminator &term) {
+#ifndef NDEBUG
+    term.annotation = currentPassAnnotation;
 #endif
 }
 
@@ -629,7 +659,8 @@ void print_cfg(CFG &cfg) {
         }
 
 #ifndef NDEBUG
-        printf("[ %*s ]   ", kPrintWhitespace, " ");
+        const char *annotation = (*bb)->term.annotation;
+        printf("[ %*.*s ]   ", kPrintWhitespace, kPrintWhitespace, annotation ? annotation : "");
 #endif
         switch ((*bb)->term.kind) {
             case Terminator::Kind::kGoto: {
@@ -647,16 +678,21 @@ void print_cfg(CFG &cfg) {
                 break;
             }
             case Terminator::Kind::kRet:
-                printf("ret phi(");
-                for (size_t i = 0; i < (*bb)->term.ret.args.size; i++) {
-                    RetTerminator::Arg &retArg = (*bb)->term.ret.args[i];
-                    print_opd(retArg.opd);
-                    printf("[B%d]", retArg.bb->id);
-                    if (i < (*bb)->term.ret.args.size - 1) {
-                        printf(", ");
+                printf("ret");
+                if ((*bb)->term.ret.args.size) {
+                    printf(" phi(");
+                    for (size_t i = 0; i < (*bb)->term.ret.args.size; i++) {
+                        RetTerminator::Arg &retArg = (*bb)->term.ret.args[i];
+                        print_opd(retArg.opd);
+                        printf("[B%d]", retArg.bb->id);
+                        if (i < (*bb)->term.ret.args.size - 1) {
+                            printf(", ");
+                        }
                     }
+                    printf(")\n");
+                } else {
+                    printf("\n");
                 }
-                printf(")\n");
                 break;
         }
     }
@@ -699,7 +735,7 @@ CFG &generate_cfg(IR &globalIR, Node *functionDecl) {
 
     translate_block(irc, cfg.exit, functionDecl->decl.rval->func.body);
     cfg.exit->id = cfg.numBlocks++;
-    cfg.exit->term.kind = Terminator::Kind::kRet;
+    init_terminator(Terminator::Kind::kRet, cfg.exit);
 
     // Sets up id to block map, initial rpo and predecessors
     LList<BasicBlock *> bbMap;
@@ -738,7 +774,7 @@ CFG &generate_cfg(IR &globalIR, Node *functionDecl) {
                 BasicBlock *tgt = src->term.succ[i];
                 if (tgt->pred.size > 1) {
                     BasicBlock *newBlock = create_block(cfg);
-                    newBlock->term.kind = Terminator::Kind::kGoto;
+                    init_terminator(Terminator::Kind::kGoto, newBlock);
                     newBlock->term.tgoto.target = tgt;
                     newBlock->pred.init(1);
                     newBlock->pred.add(src);

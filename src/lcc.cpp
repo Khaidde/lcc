@@ -345,7 +345,6 @@ void optimize_package(IR &globalIR, Package *package) {
         assert(decl->decl.rval);
         if (decl->decl.rval->kind != NodeKind::kFunc) continue;
         if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
-            start_pass("");
             CFG &cfg = generate_cfg(globalIR, decl);
             optimize(cfg);
         }
@@ -381,15 +380,15 @@ ErrCode compile(const char *path) {
     if (resolve_packages(cmp, path) == ErrCode::kFailure) return ErrCode::kFailure;
 
     LStringView root{".", 1};
-    Package *pkg = *cmp.packageMap[root];
-    File *file = pkg->files[0];
+    Package *rootPkg = *cmp.packageMap[root];
+    File *file = rootPkg->files[0];
     info("Compiling %s ...\n", file->finfo->path);
 
     // Semantic analysis of the file
     cmp.currFile = file;
-    if (analyze_package(&cmp, pkg)) return ErrCode::kFailure;
+    if (analyze_package(&cmp, rootPkg)) return ErrCode::kFailure;
 
-    LList<DeclInfo *> &globalDecls = (*cmp.packageMap[root])->globalDeclList;
+    LList<DeclInfo *> &globalDecls = rootPkg->globalDeclList;
     for (size_t i = 0; i < globalDecls.size; i++) {
         print_ast(globalDecls[i]->declNode);
     }
@@ -398,7 +397,7 @@ ErrCode compile(const char *path) {
     IR globalIR;
     globalIR.funcMap.init();
     optimize_package(globalIR, cmp.preloadPkg);
-    optimize_package(globalIR, *cmp.packageMap[root]);
+    optimize_package(globalIR, rootPkg);
 
     return ErrCode::kSuccess;
 }

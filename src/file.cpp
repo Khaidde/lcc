@@ -31,6 +31,7 @@ FileErrCode read_file(FileInfo **out, const char *filepath) {
                 return FileErrCode::kInternalError;
             } else {
                 *out = finfo;
+                finfo->src.compact();
                 fclose(file);
                 return FileErrCode::kSuccess;
             }

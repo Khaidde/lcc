@@ -63,7 +63,7 @@ struct CallInst {
     // TODO: used right now primarily to mark persistent values
     // Used to disable certain optimizations form going haywire (DCE)
     CFG *cfg;
-    LList<Opd> args;
+    LArray<Opd> args;
 };
 
 struct Inst {
@@ -116,6 +116,9 @@ struct Terminator {
         kRet,
     } kind;
 
+#ifndef NDEBUG
+    const char *annotation;
+#endif
     union {
         GotoTerminator tgoto;
         CondTerminator cond;
@@ -175,7 +178,8 @@ void free_inst(Inst *inst);
 void print_inst(Inst *inst);
 
 void start_pass(const char *annotation);
-void annotate(Inst *inst);
+void annotate_inst(Inst *inst);
+void annotate_term(Terminator &term);
 
 void print_cfg(CFG &cfg);
 

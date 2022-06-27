@@ -32,14 +32,14 @@ void canon_inst(Inst *inst) {
     switch (inst->kind) {
         case Inst::Kind::kAssign:
             if (const_prop_opd(inst->assign.src)) {
-                annotate(inst);
+                annotate_inst(inst);
             };
             break;
         case Inst::Kind::kBin: {
             bool lchange = const_prop_opd(inst->bin.left);
             bool rchange = const_prop_opd(inst->bin.right);
             if (lchange || rchange) {
-                annotate(inst);
+                annotate_inst(inst);
             }
             if (inst->bin.left.kind == Opd::Kind::kImm && inst->bin.right.kind == Opd::Kind::kImm) {
                 inst->kind = Inst::Kind::kAssign;
@@ -52,7 +52,7 @@ void canon_inst(Inst *inst) {
                     }
                     default: assert(!"TODO: unimplemented constant folding for infix operation");
                 }
-                annotate(inst);
+                annotate_inst(inst);
             }
             break;
         }
@@ -225,6 +225,27 @@ Expression create_temp(Inst *tmp) {
     return exp;
 }
 
+Expression create_imm(uint16_t imm) {
+    Expression exp;
+    exp.kind = Expression::Kind::kImm;
+    exp.imm = imm;
+    return exp;
+}
+
+Expression create_bin(TokenType op, Value lval, Value rval) {
+    Expression exp;
+    exp.kind = Expression::Kind::kBin;
+    exp.bin.op = op;
+    if (opt::is_commutative(op) && lval > rval) {
+        exp.bin.lval = rval;
+        exp.bin.rval = lval;
+    } else {
+        exp.bin.lval = lval;
+        exp.bin.rval = rval;
+    }
+    return exp;
+}
+
 uint32_t exp_hash(Expression &exp) {
 #define HASH(hash, val) (hash) = (((hash) << 5) - (hash)) + (val)
     size_t hash = exp.kind;
@@ -306,13 +327,19 @@ struct AvailOutSet {
         tmpSet.init();
     }
 
-    bool val_replace(Value val, Inst *tmp) {
+    void val_replace(Value val, Inst *tmp) {
+        if (!r_val_replace(val, tmp)) {
+            tmpSet.insert(val, tmp);
+        }
+    }
+
+    bool r_val_replace(Value val, Inst *tmp) {
         if (size_t *idx = tmpSet.valMap[val]) {
             tmpSet.set[*idx] = tmp;
             return true;
         }
         if (this == domTmpSet) return false;
-        return domTmpSet->val_replace(val, tmp);
+        return domTmpSet->r_val_replace(val, tmp);
     }
 
     void val_insert(Value val, Inst *tmp) {
@@ -338,17 +365,16 @@ struct AvailOutSet {
 struct GVNPREContext {
     CFG *cfg;
 
-    Value valCnt{1};
+    Value nextVal{1};
     LMap<Value, uint16_t, val_hash, val_equal> valueToImmediateTable;
     LMap<uint16_t, Value, imm_hash, imm_equal> immediatesValTable;
     LPtrMap<Inst, Value> tempValTable;
     LMap<BinValue, Value, binval_hash, binval_equal> binValTable;
 
-    AvailOutSet *availOut;
     ExpValueSet *expGen;
     TempValueSet *phiGen;
     TempValueSet *tmpGen;
-
+    AvailOutSet *availOut;
     ExpValueSet *anticIn;
 };
 
@@ -358,6 +384,87 @@ Value *lookup(GVNPREContext &gvn, Expression &exp) {
         case Expression::Kind::kTmp: return gvn.tempValTable[exp.tmp];
         case Expression::Kind::kBin: return gvn.binValTable[exp.bin];
     }
+}
+
+void dump_value_table(GVNPREContext &gvn) {
+#if DBG_GVN
+    LList<Expression> *valTab = mem::c_malloc<LList<Expression>>(gvn.nextVal);
+    for (size_t i = 0; i < gvn.nextVal; i++) {
+        valTab[i] = {};
+    }
+    for (size_t i = 0; i < gvn.tempValTable.capacity; i++) {
+        if (gvn.tempValTable.table[i].psl) {
+            Expression exp;
+            exp.kind = Expression::Kind::kTmp;
+            exp.tmp = gvn.tempValTable.table[i].key;
+            valTab[gvn.tempValTable.table[i].val].add(exp);
+        }
+    }
+    for (size_t i = 0; i < gvn.immediatesValTable.capacity; i++) {
+        if (gvn.immediatesValTable.table[i].psl) {
+            Expression exp;
+            exp.kind = Expression::Kind::kImm;
+            exp.imm = gvn.immediatesValTable.table[i].key;
+            valTab[gvn.immediatesValTable.table[i].val].add(exp);
+        }
+    }
+    for (size_t i = 0; i < gvn.binValTable.capacity; i++) {
+        if (gvn.binValTable.table[i].psl) {
+            Expression exp;
+            exp.kind = Expression::Kind::kBin;
+            exp.bin = gvn.binValTable.table[i].key;
+            valTab[gvn.binValTable.table[i].val].add(exp);
+        }
+    }
+    for (size_t i = 0; i < gvn.nextVal; i++) {
+        printf("V%-2d:: ", i);
+        for (size_t ii = 0; ii < valTab[i].size; ii++) {
+            print_exp(valTab[i][ii]);
+            printf(", ");
+        }
+        printf("\n");
+    }
+    mem::c_free(valTab);
+#else
+    (void)gvn;
+#endif
+}
+
+void dump_analysis_sets(GVNPREContext &gvn) {
+#if DBG_GVN
+    for (size_t i = 0; i < gvn.cfg->numBlocks; i++) {
+        printf("b%d: \n", i);
+        printf("\tavail: ");
+        for (size_t ii = 0; ii < gvn.availOut[i].tmpSet.set.size; ii++) {
+            Inst *tmp = gvn.availOut[i].tmpSet.set[ii];
+            printf("V%d: t%d, ", *gvn.tempValTable[tmp], tmp->dst);
+        }
+        printf("\n");
+        printf("\tantic: ");
+        for (size_t ii = 0; ii < gvn.anticIn[i].set.size; ii++) {
+            Expression &exp = gvn.anticIn[i].set[ii];
+            printf("V%d: ", *lookup(gvn, exp));
+            print_exp(exp);
+            printf(", ");
+        }
+        printf("\n");
+        printf("\ttmp: ");
+        for (size_t ii = 0; ii < gvn.tmpGen[i].set.size; ii++) {
+            Inst *tmp = gvn.tmpGen[i].set[ii];
+            printf("t%d, ", tmp->dst);
+        }
+        printf("\n");
+        printf("\texp: ");
+        for (size_t ii = 0; ii < gvn.expGen[i].set.size; ii++) {
+            Expression &exp = gvn.expGen[i].set[ii];
+            print_exp(exp);
+            printf(", ");
+        }
+        printf("\n");
+    }
+#else
+    (void)gvn;
+#endif
 }
 
 Value lookup_or_add_opd(GVNPREContext &gvn, ExpValueSet &currExpGen, Opd &opd) {
@@ -374,10 +481,10 @@ Value lookup_or_add_opd(GVNPREContext &gvn, ExpValueSet &currExpGen, Opd &opd) {
             break;
         }
         case Opd::Kind::kImm:
-            if (Value *valptr = gvn.immediatesValTable.try_put(opd.intval, gvn.valCnt)) {
+            if (Value *valptr = gvn.immediatesValTable.try_put(opd.intval, gvn.nextVal)) {
                 val = *valptr;
             } else {
-                val = gvn.valCnt++;
+                val = gvn.nextVal++;
                 gvn.valueToImmediateTable.try_put(val, opd.intval);
             }
 
@@ -409,14 +516,14 @@ void buildset_avail(GVNPREContext &gvn) {
         while (currInst) {
             switch (currInst->kind) {
                 case Inst::Kind::kPhi: {
-                    Value val = gvn.valCnt++;
+                    Value val = gvn.nextVal++;
                     gvn.tempValTable.try_put(currInst, val);
                     currPhiGen.insert(val, currInst);
                     currAvailOut.val_insert(val, currInst);
                     break;
                 }
                 case Inst::Kind::kArg: {
-                    Value val = gvn.valCnt++;
+                    Value val = gvn.nextVal++;
                     gvn.tempValTable.try_put(currInst, val);
                     currTmpGen.insert(val, currInst);
                     currAvailOut.val_insert(val, currInst);
@@ -432,23 +539,12 @@ void buildset_avail(GVNPREContext &gvn) {
                 case Inst::Kind::kBin: {
                     Value v1 = lookup_or_add_opd(gvn, currExpGen, currInst->bin.left);
                     Value v2 = lookup_or_add_opd(gvn, currExpGen, currInst->bin.right);
-
-                    Expression binExp;
-                    binExp.kind = Expression::Kind::kBin;
-                    binExp.bin.op = currInst->bin.op;
-                    if (opt::is_commutative(currInst->bin.op) && v1 > v2) {
-                        binExp.bin.lval = v2;
-                        binExp.bin.rval = v1;
-                    } else {
-                        binExp.bin.lval = v1;
-                        binExp.bin.rval = v2;
-                    }
-
+                    Expression binExp = create_bin(currInst->bin.op, v1, v2);
                     Value val;
-                    if (Value *valptr = gvn.binValTable.try_put(binExp.bin, gvn.valCnt)) {
+                    if (Value *valptr = gvn.binValTable.try_put(binExp.bin, gvn.nextVal)) {
                         val = *valptr;
                     } else {
-                        val = gvn.valCnt++;
+                        val = gvn.nextVal++;
                     }
                     currExpGen.val_insert(val, binExp);
                     gvn.tempValTable.try_put(currInst, val);
@@ -456,45 +552,126 @@ void buildset_avail(GVNPREContext &gvn) {
                     currAvailOut.val_insert(val, currInst);
                     break;
                 }
-                case Inst::Kind::kCall: break;
-            }
+                case Inst::Kind::kCall: {
+                    if (!currInst->dst) break;
 
+                    // Take conservative approach (always generate new val)
+                    // because call may have side-effects
+                    // TODO: perform purity analysis on function
+                    Value val = gvn.nextVal++;
+                    gvn.tempValTable.try_put(currInst, val);
+                    currTmpGen.insert(val, currInst);
+                    currAvailOut.val_insert(val, currInst);
+                    break;
+                }
+            }
             currInst = currInst->next;
         }
     }
 }
 
-Inst *phi_translate(Inst *inst, BasicBlock *pred, BasicBlock *succ) {
+Expression phi_translate_inst(GVNPREContext &gvn, Inst *inst, BasicBlock *pred, BasicBlock *succ);
+
+Expression phi_translate_opd(GVNPREContext &gvn, Opd &opd, BasicBlock *pred, BasicBlock *succ) {
+    switch (opd.kind) {
+        case Opd::Kind::kImm: return create_imm(opd.intval);
+        case Opd::Kind::kReg:
+            Value *valptr = gvn.tempValTable[opd.regVal];
+            assert(valptr);
+            Inst *avail = gvn.availOut[succ->id].find_leader(*valptr);
+
+            // If avail is not in the successor then it must be from a block
+            // which dominates the successor. If avail dominates successor
+            // then avail must also dominate pred. Otherwise, there would
+            // exist a path "entry -> pred -> succ" which does not include
+            // avail but this is a contradiction (avail dominates succ).
+            // This also means that avail must be available in pred
+            if (avail->block != succ) return create_temp(avail);
+
+            return phi_translate_inst(gvn, avail, pred, succ);
+    }
+}
+
+Expression phi_translate_inst(GVNPREContext &gvn, Inst *inst, BasicBlock *pred, BasicBlock *succ) {
+    if (inst->block != succ) return create_temp(inst);
     switch (inst->kind) {
         case Inst::Kind::kPhi:
-            // TODO ensure for sure that inst is in succ
-            (void)succ;
             for (size_t i = 0; i < inst->phi.joins.size; i++) {
                 if (inst->phi.joins[i].bb == pred) {
-                    return inst->phi.joins[i].ref;
+                    return create_temp(inst->phi.joins[i].ref);
                 }
             }
             assert(!"phi node must contain a relevant inst copy for the given pred");
-        default: assert(!"Unimplemented phi_translate for inst kind");
+        case Inst::Kind::kAssign:
+            assert(inst->assign.src.kind == Opd::Kind::kImm);
+            return create_imm(inst->assign.src.intval);
+        case Inst::Kind::kBin: {
+            Expression lExp = phi_translate_opd(gvn, inst->bin.left, pred, succ);
+            Expression rExp = phi_translate_opd(gvn, inst->bin.right, pred, succ);
+            Value v1 = *lookup(gvn, lExp);
+            Value v2 = *lookup(gvn, rExp);
+
+            Expression binExp = create_bin(inst->bin.op, v1, v2);
+            if (!gvn.binValTable.try_put(binExp.bin, gvn.nextVal)) {
+                gvn.nextVal++;
+            }
+            return binExp;
+        }
+        case Inst::Kind::kCall: return create_temp(inst);
+        default: assert(!"Unimplemented phi_translate for inst kind"); unreachable();
     }
-    unreachable();
 }
 
-/*
-void phi_translate(ValuedExpSet &currAnticIn, BasicBlock *pred, BasicBlock *succ) {
-    for (size_t i = 0; i < currAnticIn.set.size; i++) {
-        Expression &exp = currAnticIn.set[i];
-        switch (exp.kind) {
-            case Expression::Kind::kImm: break;
-            case Expression::Kind::kTmp: break;
-            case Expression::Kind::kBin: break;
+Expression phi_translate(GVNPREContext &gvn, Expression &exp, BasicBlock *pred, BasicBlock *succ) {
+    switch (exp.kind) {
+        case Expression::Kind::kImm: return exp;
+        case Expression::Kind::kTmp: return phi_translate_inst(gvn, exp.tmp, pred, succ);
+        case Expression::Kind::kBin: {
+            Inst *lAvail = gvn.availOut[succ->id].find_leader(exp.bin.lval);
+            Value v1 = exp.bin.lval;
+            if (lAvail) {
+                Expression exp = phi_translate_inst(gvn, lAvail, pred, succ);
+                v1 = *lookup(gvn, exp);
+            }
+            Inst *rAvail = gvn.availOut[succ->id].find_leader(exp.bin.rval);
+            Value v2 = exp.bin.rval;
+            if (rAvail) {
+                Expression exp = phi_translate_inst(gvn, rAvail, pred, succ);
+                v2 = *lookup(gvn, exp);
+            }
+
+            Expression binExp = create_bin(exp.bin.op, v1, v2);
+            if (!gvn.binValTable.try_put(binExp.bin, gvn.nextVal)) {
+                gvn.nextVal++;
+            }
+            return binExp;
         }
     }
-    (void)currAnticIn;
-    (void)pred;
-    (void)succ;
 }
-*/
+
+bool try_add_antic_expression(GVNPREContext &gvn, BasicBlock *block, Expression &exp) {
+    Value *valPtr = lookup(gvn, exp);
+    assert(valPtr);
+    Value expVal = *valPtr;
+    if (exp.kind == Expression::Kind::kTmp) {
+        TempValueSet &currTmpGen = gvn.tmpGen[block->id];
+        if (size_t *idx = currTmpGen.valMap[expVal]) {
+            if (currTmpGen.set[*idx] == exp.tmp) {
+                // Note: we only skip the temporary if the rval
+                // of the assignment has no value. This typically
+                // doesn't happen except for cases like "v0 = <arg 0>"
+                return false;
+            }
+        }
+    }
+    ExpValueSet &currAnticIn = gvn.anticIn[block->id];
+    if (exp.kind == Expression::Kind::kBin) {
+        bool isKilled = !currAnticIn.valMap[exp.bin.lval];
+        isKilled |= !currAnticIn.valMap[exp.bin.rval];
+        if (isKilled) return false;
+    }
+    return currAnticIn.val_insert(expVal, exp);
+}
 
 void buildset_antic(GVNPREContext &gvn) {
     for (auto bb = po_begin(*gvn.cfg), end = po_end(*gvn.cfg); bb != end; ++bb) {
@@ -506,46 +683,20 @@ void buildset_antic(GVNPREContext &gvn) {
         changed = false;
         for (auto bb = po_begin(*gvn.cfg), end = po_end(*gvn.cfg); bb != end; ++bb) {
             ExpValueSet &currExpGen = gvn.expGen[(*bb)->id];
-            TempValueSet &currTmpGen = gvn.tmpGen[(*bb)->id];
-            ExpValueSet &currAnticIn = gvn.anticIn[(*bb)->id];
 
             for (size_t i = 0; i < currExpGen.set.size; i++) {
-                Expression &exp = currExpGen.set[i];
-                Value *valPtr = lookup(gvn, exp);
-                assert(valPtr);
-                Value expVal = *valPtr;
-                if (exp.kind == Expression::Kind::kTmp) {
-                    if (size_t *idx = currTmpGen.valMap[expVal]) {
-                        if (currTmpGen.set[*idx] == exp.tmp) {
-                            // Note: we only skip the temporary if the rval
-                            // of the assignment has no value. This typically
-                            // doesn't happen except for cases like "v0 = <arg 0>"
-                            continue;
-                        }
-                    }
-                }
-                if (currAnticIn.val_insert(expVal, exp)) {
+                if (try_add_antic_expression(gvn, *bb, currExpGen.set[i])) {
                     changed = true;
                 }
             }
-
             if (succ_count(*bb) == 1) {
-                // TODO phi_translate successor
-                ExpValueSet &anticOut = gvn.anticIn[(*succ_begin(*bb))->id];
+                BasicBlock *succ = *succ_begin(*bb);
+                ExpValueSet &anticOut = gvn.anticIn[succ->id];
 
                 // Iterate over all values in anticOut excluding temps generated in this block
                 for (size_t i = 0; i < anticOut.set.size; i++) {
-                    Expression &exp = anticOut.set[i];
-                    Value *valPtr = lookup(gvn, exp);
-                    assert(valPtr);
-                    Value expVal = *valPtr;
-                    if (exp.kind == Expression::Kind::kTmp) {
-                        if (currTmpGen.valMap[expVal]) {
-                            assert(!"TODO: test this case, didn't think this was possible...");
-                            continue;
-                        }
-                    }
-                    if (currAnticIn.val_insert(expVal, exp)) {
+                    Expression exp = phi_translate(gvn, anticOut.set[i], *bb, succ);
+                    if (try_add_antic_expression(gvn, *bb, exp)) {
                         changed = true;
                     }
                 }
@@ -566,17 +717,8 @@ void buildset_antic(GVNPREContext &gvn) {
                         if (!succAnticIn.valMap[expVal]) break;
                         ++succ;
                     }
-                    if (succ == end) {
-                        if (exp.kind == Expression::Kind::kTmp) {
-                            if (size_t *idx = currTmpGen.valMap[expVal]) {
-                                if (currTmpGen.set[*idx] == exp.tmp) {
-                                    continue;
-                                }
-                            }
-                        }
-                        if (currAnticIn.val_insert(expVal, exp)) {
-                            changed = true;
-                        }
+                    if (succ == end && try_add_antic_expression(gvn, *bb, exp)) {
+                        changed = true;
                     }
                 }
             }
@@ -590,10 +732,8 @@ void insert(GVNPREContext &gvn) {
         newPhis[(*bb)->id] = {};
     }
 
-    size_t i = 0;
     bool changed = true;
-    while (changed && i < 2) {
-        i++;
+    while (changed) {
         changed = false;
         for (auto bb = po_begin(*gvn.cfg), end = po_end(*gvn.cfg); bb != end; ++bb) {
             LList<Inst *> &currNewPhis = newPhis[(*bb)->id];
@@ -623,27 +763,17 @@ void insert(GVNPREContext &gvn) {
 
                         bool hasSome = false;
                         bool allSame = true;
-                        Inst *firstTmp = nullptr;
-                        printf("bruh-%d\n", (*bb)->id);
                         for (auto pred = pred_begin(*bb), pend = pred_end(*bb); pred != pend; ++pred) {
-                            // TODO: phi_translate expression across predecessor
                             AvailOutSet &predAvailOut = gvn.availOut[(*pred)->id];
-                            if (Inst *predTmp = predAvailOut.find_leader(*anticValPtr)) {
-                                printf("exists!!\n");
+                            Expression phiTransExp = phi_translate(gvn, anticExp, *pred, *bb);
+                            Value *phiTransValPtr = lookup(gvn, phiTransExp);
+                            if (Inst *predTmp = predAvailOut.find_leader(*phiTransValPtr)) {
                                 avail[numAvail++] = create_temp(predTmp);
                                 hasSome = true;
-                                if (!firstTmp) {
-                                    firstTmp = predTmp;
-                                } else if (firstTmp != predTmp) {
-                                    allSame = false;
-                                }
                             } else {
-                                printf("doesnt!!\n");
-                                // TODO: fix this after implementing phi_translate
-                                avail[numAvail++] = anticExp;
+                                avail[numAvail++] = phiTransExp;
                                 allSame = false;
                             }
-                            if (!allSame && hasSome) break;
                         }
                         if (!allSame && hasSome) {
                             Inst *newPhiInst = create_inst(Inst::Kind::kPhi);
@@ -681,10 +811,10 @@ void insert(GVNPREContext &gvn) {
                                     opt::canon_inst(newBinInst);
 
                                     Value binVal;
-                                    if (Value *valptr = gvn.binValTable.try_put(hoistBin, gvn.valCnt)) {
+                                    if (Value *valptr = gvn.binValTable.try_put(hoistBin, gvn.nextVal)) {
                                         binVal = *valptr;
                                     } else {
-                                        binVal = gvn.valCnt++;
+                                        binVal = gvn.nextVal++;
                                     }
                                     gvn.tempValTable.try_put(newBinInst, binVal);
                                     predAvailOut.tmpSet.insert(binVal, newBinInst);
@@ -731,6 +861,19 @@ void eliminate(GVNPREContext &gvn) {
         Inst *currInst = (*bb)->start;
         while (currInst) {
             switch (currInst->kind) {
+                case Inst::Kind::kPhi:
+                    // Copy propagation on phi joins
+                    for (size_t i = 0; i < currInst->phi.joins.size; i++) {
+                        PhiInst::Arg &phiArg = currInst->phi.joins[i];
+                        Value *valPtr = gvn.tempValTable[phiArg.ref];
+                        assert(valPtr);
+                        Inst *avail = gvn.availOut[(*bb)->id].find_leader(*valPtr);
+                        if (avail && avail != phiArg.ref) {
+                            phiArg.ref = avail;
+                            annotate_inst(currInst);
+                        }
+                    }
+                    break;
                 case Inst::Kind::kBin: {
                     Value *valptr = gvn.tempValTable[currInst];
                     assert(valptr);
@@ -739,14 +882,12 @@ void eliminate(GVNPREContext &gvn) {
                         currInst->kind = Inst::Kind::kAssign;
                         currInst->assign.src.kind = Opd::Kind::kReg;
                         currInst->assign.src.regVal = leadTmp;
-                        annotate(currInst);
+                        annotate_inst(currInst);
                     } else {
                         // Do value-based copy propagation on bin operands
                         bool lchange = copy_prop_opd(gvn, *bb, currInst->bin.left);
                         bool rchange = copy_prop_opd(gvn, *bb, currInst->bin.right);
-                        if (lchange || rchange) {
-                            annotate(currInst);
-                        }
+                        if (lchange || rchange) annotate_inst(currInst);
                     }
                     break;
                 }
@@ -754,7 +895,7 @@ void eliminate(GVNPREContext &gvn) {
                     // Copy propagation on call argument opds
                     for (size_t i = 0; i < currInst->call.args.size; i++) {
                         if (copy_prop_opd(gvn, *bb, currInst->call.args[i])) {
-                            annotate(currInst);
+                            annotate_inst(currInst);
                         }
                     }
                     break;
@@ -764,13 +905,13 @@ void eliminate(GVNPREContext &gvn) {
         }
         if ((*bb)->term.kind == Terminator::Kind::kCond) {
             if (copy_prop_opd(gvn, *bb, (*bb)->term.cond.predicate)) {
-                // TODO: add annotation for conditional terminator
+                annotate_term((*bb)->term);
             }
         }
     }
     for (size_t i = 0; i < gvn.cfg->exit->term.ret.args.size; i++) {
         if (copy_prop_opd(gvn, gvn.cfg->exit, gvn.cfg->exit->term.ret.args[i].opd)) {
-            // TODO: add annotation for conditional terminator
+            annotate_term(gvn.cfg->exit->term);
         }
     }
 }
@@ -778,7 +919,7 @@ void eliminate(GVNPREContext &gvn) {
 void pass(CFG &cfg) {
     GVNPREContext gvn = {};
     gvn.cfg = &cfg;
-    gvn.valCnt = 1;
+    gvn.nextVal = 1;
     gvn.valueToImmediateTable.init();
     gvn.immediatesValTable.init();
     gvn.tempValTable.init();
@@ -787,42 +928,21 @@ void pass(CFG &cfg) {
     gvn.expGen = mem::c_malloc<ExpValueSet>(gvn.cfg->numBlocks);
     gvn.phiGen = mem::c_malloc<TempValueSet>(gvn.cfg->numBlocks);
     gvn.tmpGen = mem::c_malloc<TempValueSet>(gvn.cfg->numBlocks);
-
     gvn.availOut = mem::c_malloc<AvailOutSet>(cfg.numBlocks);
-    buildset_avail(gvn);
-
     gvn.anticIn = mem::c_malloc<ExpValueSet>(cfg.numBlocks);
+
+    buildset_avail(gvn);
     buildset_antic(gvn);
-
     insert(gvn);
-
     eliminate(gvn);
 
-#if DBG_GVN
-    for (size_t i = 0; i < cfg.numBlocks; i++) {
-        printf("b%d: \n", i);
-        printf("\tavail: ");
-        for (size_t ii = 0; ii < gvn.availOut[i].tmpSet.set.size; ii++) {
-            Inst *tmp = gvn.availOut[i].tmpSet.set[ii];
-            printf("V%d: t%d, ", *gvn.tempValTable[tmp], tmp->dst);
-        }
-        printf("\n");
-        printf("\tantic: ");
-        for (size_t ii = 0; ii < gvn.anticIn[i].set.size; ii++) {
-            Expression &exp = gvn.anticIn[i].set[ii];
-            printf("V%d: ", *lookup(gvn, exp));
-            print_exp(exp);
-            printf(", ");
-        }
-        printf("\n");
-        printf("\ttmp: ");
-        for (size_t ii = 0; ii < gvn.tmpGen[i].set.size; ii++) {
-            Inst *tmp = gvn.tmpGen[i].set[ii];
-            printf("t%d, ", tmp->dst);
-        }
-        printf("\n");
-    }
-#endif
+    dump_analysis_sets(gvn);
+    dump_value_table(gvn);
+
+    mem::c_free(gvn.valueToImmediateTable.table);
+    mem::c_free(gvn.immediatesValTable.table);
+    mem::c_free(gvn.tempValTable.table);
+    mem::c_free(gvn.binValTable.table);
 
     for (size_t i = 0; i < gvn.cfg->numBlocks; i++) {
         gvn.expGen[i].destroy();
@@ -833,55 +953,12 @@ void pass(CFG &cfg) {
     mem::c_free(gvn.phiGen);
     mem::c_free(gvn.tmpGen);
 
-#if DBG_GVN
-    // TODO: delete. dumps all values and corresponding values
-    LList<Expression> *valTab = mem::c_malloc<LList<Expression>>(gvn.valCnt);
-    for (size_t i = 0; i < gvn.valCnt; i++) {
-        valTab[i] = {};
+    for (size_t i = 0; i < gvn.cfg->numBlocks; i++) {
+        gvn.availOut[i].tmpSet.destroy();
+        gvn.anticIn[i].destroy();
     }
-    for (size_t i = 0; i < gvn.tempValTable.capacity; i++) {
-        if (gvn.tempValTable.table[i].psl) {
-            Expression exp;
-            exp.kind = Expression::Kind::kTmp;
-            exp.tmp = gvn.tempValTable.table[i].key;
-            valTab[gvn.tempValTable.table[i].val].add(exp);
-        }
-    }
-    for (size_t i = 0; i < gvn.immediatesValTable.capacity; i++) {
-        if (gvn.immediatesValTable.table[i].psl) {
-            Expression exp;
-            exp.kind = Expression::Kind::kImm;
-            exp.imm = gvn.immediatesValTable.table[i].key;
-            valTab[gvn.immediatesValTable.table[i].val].add(exp);
-        }
-    }
-    for (size_t i = 0; i < gvn.binValTable.capacity; i++) {
-        if (gvn.binValTable.table[i].psl) {
-            Expression exp;
-            exp.kind = Expression::Kind::kBin;
-            exp.bin = gvn.binValTable.table[i].key;
-            valTab[gvn.binValTable.table[i].val].add(exp);
-        }
-    }
-    for (size_t i = 0; i < gvn.valCnt; i++) {
-        printf("V%d:: ", i);
-        for (size_t ii = 0; ii < valTab[i].size; ii++) {
-            print_exp(valTab[i][ii]);
-            printf(", ");
-        }
-        printf("\n");
-    }
-    mem::c_free(valTab);
-#endif
-
-    mem::c_free(gvn.valueToImmediateTable.table);
-    mem::c_free(gvn.immediatesValTable.table);
-    mem::c_free(gvn.tempValTable.table);
-    mem::c_free(gvn.binValTable.table);
-
-    // TODO: free Valuedsets inside anticIn and availOut
-    mem::c_free(gvn.anticIn);
     mem::c_free(gvn.availOut);
+    mem::c_free(gvn.anticIn);
 }
 
 }  // namespace gvnpre
