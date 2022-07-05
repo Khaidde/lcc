@@ -3,9 +3,8 @@
 namespace lcc {
 
 ScopeStack *scope_init() {
-    ScopeStack *table = mem::malloc<ScopeStack>();
+    ScopeStack *table = mem::gb_alloc<ScopeStack>();
     table->size = 0;
-    table->scopes = {};
     return table;
 }
 
@@ -18,7 +17,7 @@ void scope_enter(ScopeStack *stack, Node *owner) {
     assert(owner);
     Scope *scope;
     if (stack->size >= stack->scopes.size) {
-        scope = mem::malloc<Scope>();
+        scope = mem::gb_alloc<Scope>();
         stack->scopes.add(scope);
     } else {
         scope = stack->scopes.data[stack->size];

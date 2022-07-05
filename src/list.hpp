@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "mem.hpp"
+#include "util.hpp"
 
 namespace lcc {
 
@@ -17,6 +18,11 @@ struct ListIterator {
         return *this;
     }
 
+    ListIterator &operator--() {
+        --curr;
+        return *this;
+    }
+
     friend bool operator==(const ListIterator &a, const ListIterator &b) { return a.curr == b.curr; }
 
     friend bool operator!=(const ListIterator &a, const ListIterator &b) { return a.curr != b.curr; }
@@ -24,130 +30,173 @@ struct ListIterator {
     T *curr;
 };
 
-struct FixedBitField {
-    void init(size_t capacity) {
-        this->capacity = capacity;
+struct Bitset {
+    template <typename A>
+    void init(A &alloc, size_t capacity) {
+        assert(capacity && "Bitset capacity must be positive");
+        this->bitCapacity = capacity;
         if (capacity <= 64) {
-            data = (uint8_t *)&smallData;
-            smallData = 0;
+            data = &smallData;
         } else {
-            data = mem::c_malloc<uint8_t>(capacity >> 2);
-            for (size_t i = 0; i < (capacity >> 2); i++) {
-                data[i] = 0;
-            }
+            data = alloc.template alloc<uint64_t>(get_num_words());
         }
+        reset();
     }
 
-    void destroy() {
-        if (capacity > 64) mem::c_free(data);
+    template <typename A>
+    void destroy(A &alloc) {
+        if (bitCapacity > 64) alloc.free(data);
     }
+
+    size_t get_num_words() { return (bitCapacity >> 6) + 1; }
 
     void reset() {
-        if (capacity <= 64) {
-            smallData = 0;
-        } else {
-            for (size_t i = 0; i < (capacity >> 2); i++) {
-                data[i] = 0;
-            }
+        for (size_t i = 0; i < get_num_words(); i++) {
+            data[i] = 0;
         }
     }
 
-    void set(size_t i) {
-        assert(i < capacity);
-        data[i >> 2] |= 1 << (i & 0x7);
+    void clear_leading_zeros() {
+        size_t wordIdx = get_num_words() - 1;
+        size_t mask = (1 << (bitCapacity & 63)) - 1;
+        data[wordIdx] &= mask;
     }
 
-    void clear(size_t i) {
-        assert(i < capacity);
-        data[i >> 2] &= ~((uint8_t)(1 << (i & 0x7)));
+    // Return whether or not there was a change
+    bool set(size_t i) {
+        assert(i < bitCapacity);
+        uint64_t &word = data[i >> 6];
+        uint64_t prev = word;
+        word |= (uint64_t)1 << (i & 63);
+        return word != prev;
+    }
+
+    // Return whether or not there was a change
+    bool clear(size_t i) {
+        assert(i < bitCapacity);
+        uint64_t &word = data[i >> 6];
+        uint64_t prev = word;
+        word &= ~((uint64_t)1 << (i & 63));
+        return word != prev;
     }
 
     bool operator[](size_t i) {
-        assert(i < capacity);
-        return data[i >> 2] & (1 << (i & 0x7));
+        assert(i < bitCapacity);
+        return data[i >> 6] & (1 << (i & 63));
     }
 
-#ifndef NDEBUG
-    size_t capacity;
-#endif
-    uint64_t smallData;
-    uint8_t *data;
-};
-
-struct SparseSet {
-    void init(size_t capacity) { init(capacity, capacity); }
-
-    void init(size_t capacity, size_t valLim) {
-        dense = mem::c_malloc<size_t>(capacity);
-        sparse = mem::c_malloc<size_t>(valLim);
-        size = 0;
-#ifndef NDEBUG
-        this->capacity = capacity;
-        this->valLim = valLim;
-#endif
-    }
-
-    void clear() { size = 0; }
-
-    bool try_add(size_t val) {
-        assert(val < valLim);
-        if (contains(val)) return false;
-        dense[size] = val;
-        sparse[val] = size++;
+    bool all_zero() {
+        for (size_t i = 0; i < get_num_words(); i++) {
+            if (data[i] != 0) return false;
+        }
         return true;
     }
 
-    size_t pop() {
-        assert(size > 0);
-        return dense[--size];
+    void intersect(Bitset &other) {
+        size_t cnt = MIN(get_num_words(), other.get_num_words());
+        size_t i = 0;
+        for (; i < cnt; i++) {
+            data[i] &= other.data[i];
+        }
+        for (; i < get_num_words(); i++) {
+            data[i] = 0;
+        }
     }
 
-    bool contains(size_t val) {
-        assert(val < valLim);
-        size_t s = sparse[val];
-        return s < size && dense[s] == val;
+    void and_not(Bitset &other) {
+        size_t cnt = MIN(get_num_words(), other.get_num_words());
+        size_t i = 0;
+        for (; i < cnt; i++) {
+            data[i] &= ~other.data[i];
+        }
     }
 
-    size_t *dense;
-    size_t *sparse;
-    size_t size;
-#ifndef NDEBUG
-    size_t capacity;  // size of dense list
-    size_t valLim;    // size of sparse list
-#endif
-};
-
-template <typename T>
-struct LArray {
-    void init(size_t sz) {
-        assert(sz && "Size of array must be positive");
-        data = mem::c_malloc<T>(sz);
-        size = sz;
+    void and_not(Bitset &a, Bitset &b) {
+        assert(bitCapacity >= a.bitCapacity);
+        size_t cnt = MIN(a.get_num_words(), b.get_num_words());
+        size_t i = 0;
+        for (; i < cnt; i++) {
+            data[i] = a.data[i] & ~b.data[i];
+        }
+        for (; i < a.get_num_words(); i++) {
+            data[i] = a.data[i];
+        }
     }
 
-    T &operator[](size_t i) {
-        assert(0 <= i && i < size);
-        return data[i];
+    void union_set(Bitset &other) {
+        size_t cnt = MIN(get_num_words(), other.get_num_words());
+        size_t i = 0;
+        for (; i < cnt; i++) {
+            data[i] |= other.data[i];
+        }
     }
 
-    T *data{nullptr};
-    size_t size{0};
+    struct Iterator {
+        size_t operator*() const { return idx; }
+
+        Iterator &operator++() {
+            if (idx + 1 < set->bitCapacity) {
+                idx = set->get_next_idx(idx + 1);
+            } else {
+                idx = set->bitCapacity;
+            }
+            return *this;
+        }
+
+        friend bool operator==(const Iterator &a, const Iterator &b) {
+            assert(a.set == b.set);
+            return a.idx == b.idx;
+        }
+
+        friend bool operator!=(const Iterator &a, const Iterator &b) {
+            assert(a.set == b.set);
+            return a.idx != b.idx;
+        }
+
+        size_t idx;
+        Bitset *set;
+    };
+
+    Iterator begin() {
+        clear_leading_zeros();
+        return {get_next_idx(0), this};
+    }
+
+    Iterator end() { return {bitCapacity, this}; }
+
+    size_t get_next_idx(size_t idx) {
+        assert(idx < bitCapacity);
+
+        size_t wordIdx = idx >> 6;
+        size_t wordOff = idx & 63;
+
+        size_t res = data[wordIdx] >> wordOff;
+        if (res != 0) return idx + (size_t)lsb(res);
+
+        for (size_t i = wordIdx + 1; i < get_num_words(); i++) {
+            if (data[i] == 0) continue;
+            return (i << 6) + (size_t)lsb(data[i]);
+        }
+
+        return bitCapacity;
+    }
+
+    size_t bitCapacity;  // Number of bits stored in set
+    uint64_t smallData;
+    uint64_t *data;
 };
 
 template <typename T>
 struct LList {
     void init(size_t initialSize) {
         assert(initialSize && "Initial size of list must be positive");
-        data = mem::c_malloc<T>(initialSize);
+        data = mem::c_alloc<T>(initialSize);
         size = 0;
         capacity = initialSize;
     }
 
-    void init(T *items, size_t initialSize) {
-        init(initialSize);
-        for (size_t i = 0; i < initialSize; i++) {
-            data[i] = items[i];
-        }
+    void destroy() {
+        if (data) mem::c_free(data);
     }
 
     void resize() {
@@ -180,7 +229,7 @@ struct LList {
         data[size++] = item;
     }
 
-    T remove() { return data[--size]; }
+    T pop_back() { return data[--size]; }
 
     T &operator[](size_t i) {
         assert(0 <= i && i < size);

@@ -1,14 +1,10 @@
 #include "file.hpp"
 
-#include <cstdio>
-
-#if defined(_WIN32) && defined(__MINGW32__)
 #include <dirent.h>
 #include <sys/stat.h>
 #include <windows.h>
-#else
-#error "Compilation only supported on windows with posix libraries"
-#endif
+
+#include <cstdio>
 
 namespace lcc::file {
 
@@ -17,7 +13,7 @@ FileErrCode read_file(FileInfo **out, const char *filepath) {
     if (!file) {
         return FileErrCode::kNotFound;
     }
-    FileInfo *finfo = mem::malloc<FileInfo>();
+    FileInfo *finfo = mem::gb_alloc<FileInfo>();
     finfo->path = filepath;
     finfo->src.init(0x100);
     for (;;) {

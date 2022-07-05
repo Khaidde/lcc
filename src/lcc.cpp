@@ -6,7 +6,7 @@
 #include "analysis.hpp"
 #include "compilation.hpp"
 #include "diagnostic.hpp"
-#include "ir.hpp"
+#include "gen.hpp"
 #include "lstring.hpp"
 #include "optimize.hpp"
 #include "parse.hpp"
@@ -167,7 +167,7 @@ ErrCode resolve_file(CompilationContext &cmp, File *file, const char *filename) 
             if (file->importListHead) global->import.nextImport = file->importListHead;
             file->importListHead = global;
         } else if (global->kind == NodeKind::kDecl) {
-            DeclInfo *declInfo = mem::malloc<DeclInfo>();
+            DeclInfo *declInfo = mem::gb_alloc<DeclInfo>();
             declInfo->isResolving = false;
             declInfo->nextDecl = nullptr;
             declInfo->declNode = global;
@@ -196,36 +196,34 @@ CompilationContext preload(const char *preloadFilePath) {
 
     // Prepare stacks for analysis of entire program
     cmp.scopeStack = scope_init();
-    cmp.resolveFuncBodyStack = {};
     cmp.currNumPendingFunc = 0;
 
     assert(file::is_regular_file(preloadFilePath));
 
-    File *preloadFile = mem::malloc<File>();
+    File *preloadFile = mem::gb_alloc<File>();
     file::FileErrCode errCode = file::read_file(&preloadFile->finfo, preloadFilePath);
     if (errCode != file::FileErrCode::kSuccess) assert(false);
 
-    cmp.preloadPkg = mem::malloc<Package>();
-    cmp.preloadPkg->globalDeclList = {};
+    cmp.preloadPkg = mem::gb_alloc<Package>();
     cmp.preloadPkg->files.init(1);
     cmp.preloadPkg->files.add(preloadFile);
     cmp.preloadPkg->globalDecls.init();
     preloadFile->package = cmp.preloadPkg;
 
-    File *file = mem::malloc<File>();
+    File *file = mem::gb_alloc<File>();
     file->package = cmp.preloadPkg;
     cmp.preloadPkg->files.add(file);
     ErrCode parseRes = resolve_file(cmp, file, preloadFilePath);
     if (parseRes != ErrCode::kSuccess) assert(false);
 
-    builtin_type::none = mem::malloc<Type>();
+    builtin_type::none = mem::gb_alloc<Type>();
     builtin_type::none->kind = TypeKind::kNone;
 
-    builtin_type::u16 = mem::malloc<Type>();
+    builtin_type::u16 = mem::gb_alloc<Type>();
     builtin_type::u16->kind = TypeKind::kNamed;
     builtin_type::u16->name.ident = {"u16", 3};
 
-    builtin_type::string = mem::malloc<Type>();
+    builtin_type::string = mem::gb_alloc<Type>();
     builtin_type::string->kind = TypeKind::kNamed;
     builtin_type::string->name.ident = {"string", 6};
 
@@ -296,13 +294,11 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
             info("Importing package '%s' ...\n", lstr_raw_str(importCtx.importName));
 
             // Find all files in the package
-            Package *pkg = mem::malloc<Package>();
-            pkg->globalDeclList = {};
-            pkg->files = {};
+            Package *pkg = mem::gb_alloc<Package>();
             pkg->globalDecls.init();
             cmp.packageMap.try_put(importCtx.importName, pkg);
             for (size_t i = 0; i < filenames.size; i++) {
-                File *file = mem::malloc<File>();
+                File *file = mem::gb_alloc<File>();
                 file->package = pkg;
                 pkg->files.add(file);
                 if (resolve_file(cmp, file, filenames[i].data) == ErrCode::kFailure) return ErrCode::kFailure;
@@ -330,23 +326,21 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     return ErrCode::kSuccess;
 }
 
-void optimize_package(IR &globalIR, Package *package) {
+void optimize_package(Opt &opt, Package *package) {
     for (size_t i = 0; i < package->globalDeclList.size; i++) {
         Node *decl = package->globalDeclList[i]->declNode;
         if (decl->decl.isExtern) {
             if (decl->decl.resolvedTy->kind == TypeKind::kFuncTy) {
-                CFG cfg;
-                cfg.globalIR = &globalIR;
-                cfg.ident = decl->decl.lval->name.ident;
-                globalIR.funcMap.try_put(cfg.ident, cfg);
+                Function func;
+                func.ident = decl->decl.lval->name.ident;
+                opt.fnNameMap.try_put(func.ident, func);
             }
             continue;
         }
         assert(decl->decl.rval);
         if (decl->decl.rval->kind != NodeKind::kFunc) continue;
         if (decl->decl.rval->func.body->kind == NodeKind::kBlock) {
-            CFG &cfg = generate_cfg(globalIR, decl);
-            optimize(cfg);
+            optimize(opt, gen_function(opt, decl));
         }
     }
 }
@@ -394,10 +388,10 @@ ErrCode compile(const char *path) {
     }
 
     // Translation into cfg and intraprocedural optimizations
-    IR globalIR;
-    globalIR.funcMap.init();
-    optimize_package(globalIR, cmp.preloadPkg);
-    optimize_package(globalIR, rootPkg);
+    Opt opt;
+    opt.fnNameMap.init();
+    optimize_package(opt, cmp.preloadPkg);
+    optimize_package(opt, rootPkg);
 
     return ErrCode::kSuccess;
 }

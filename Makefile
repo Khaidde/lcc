@@ -5,6 +5,8 @@ BIN_DIR ?= ${BUILD_DIR}/bin
 OBJ_DIR ?= ${BUILD_DIR}/src
 SRC_DIR ?= src
 
+DBG_ARGS ?= .
+
 CC := clang++
 
 ifeq (${BUILD_TYPE},DEBUG)
@@ -37,14 +39,8 @@ ${OBJ_DIR}/%.o: ${SRC_DIR}/%.cpp
 				@mkdir -p ${dir $@}
 				${CC} ${C_FLAGS} -c $< -MMD -MF $(@:.o=.d) -o $@
 
-test-alloc: ${OBJ_DIR}/test_alloc.o ${OBJ_DIR}/mem.o ${OBJ_DIR}/print.o
-				@mkdir -p ${dir $@}
-				${CC} ${C_FLAGS} $^ -o ${BIN_DIR}/test_alloc.exe
-			  ./${BIN_DIR}/test_alloc.exe
-
-${OBJ_DIR}/test_alloc.o: test/src/test_alloc.cpp
-				@mkdir -p ${dir $@}
-				${CC} ${C_FLAGS} -c $< -MMD -MF $(@:.o=.d) -o $@
+gdb: build
+				gdb -ex 'b abort' -ex run --args ${EXEC} ${DBG_ARGS}
 
 clean:
 				rm -f ${BIN_DIR}/* ${OBJ_DIR}/*

@@ -7,9 +7,9 @@ using namespace lcc;
 
 int main(int argc, char **argv) {
     if (command_line(argc, argv) == ErrCode::kFailure) {
-        fprintf(stderr, "  Failed to compile\n");
+        fprintf(stderr, "Failed to compile\n");
         return EXIT_FAILURE;
     }
-    printf("  Compilation done\n");
+    printf("Compilation done\n");
     return EXIT_SUCCESS;
 }

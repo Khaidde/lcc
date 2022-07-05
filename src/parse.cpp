@@ -13,7 +13,7 @@ bool has_errors(Lexer *l) { return lex_peek(l)->type == TokenType::kErr; }
 bool check_peek(Lexer *l, TokenType type) { return lex_peek(l)->type == type; }
 
 Node *create_node(Lexer *l, NodeKind kind) {
-    Node *node = mem::p_malloc<Node>();
+    Node *node = mem::p_alloc<Node>();
     node->startI = lex_peek(l)->startI;
     node->kind = kind;
     return node;
@@ -127,6 +127,7 @@ Node *parse_decl_from_lval(Lexer *l, Node *lval) {
     if (hasType) {
         if (decl->decl.lval->kind != NodeKind::kName) {
             dx_err(at_node(l->finfo, decl->decl.lval), "Left side of declaration must be a variable name\n");
+            dx_note(at_token(l->finfo, lex_peek(l)), "Try using assignment instead \n");
             return nullptr;
         }
 
@@ -179,13 +180,12 @@ Result r_parse_type(Lexer *l, Type *dest) {
             dest->kind = TypeKind::kPtr;
             lex_next(l);  // next *
 
-            dest->ptr.inner = mem::malloc<Type>();
+            dest->ptr.inner = mem::gb_alloc<Type>();
             if (r_parse_type(l, dest->ptr.inner)) return kError;
             break;
         }
         case TokenType::kLParen: {
             dest->kind = TypeKind::kFuncTy;
-            dest->funcTy.paramTys = {};
             lex_next(l);  // next (
             for (;;) {
                 if (has_errors(l)) return kError;
@@ -199,7 +199,7 @@ Result r_parse_type(Lexer *l, Type *dest) {
                     break;
                 }
 
-                Type *argTy = mem::malloc<Type>();
+                Type *argTy = mem::gb_alloc<Type>();
                 if (r_parse_type(l, argTy)) return kError;
                 dest->funcTy.paramTys.add(argTy);
 
@@ -215,7 +215,7 @@ Result r_parse_type(Lexer *l, Type *dest) {
             }
             if (check_peek(l, TokenType::kArrow)) {
                 lex_next(l);  // next ->
-                dest->funcTy.retTy = mem::malloc<Type>();
+                dest->funcTy.retTy = mem::gb_alloc<Type>();
                 if (r_parse_type(l, dest->funcTy.retTy)) return kError;
             } else {
                 dest->funcTy.retTy = builtin_type::none;
@@ -312,7 +312,6 @@ Node *parse_operand(Lexer *l) {
         }
         case TokenType::kColon: {
             Node *func = create_node(l, NodeKind::kFunc);
-            func->func.params = {};
             lex_next(l);  // next :
             if (!check_peek(l, TokenType::kLParen)) {
                 dx_err(at_token(l->finfo, lex_peek(l)), "Expected ( for parameter list of function\n");
@@ -415,7 +414,6 @@ Node *parse_infix(Lexer *l, int lprec, Node *left) {
             case TokenType::kLParen: {
                 Node *call = create_node(l, NodeKind::kCall);
                 align_node_start(call, left->startI);
-                call->call.args = {};
                 call->call.callee = left;
                 lex_next(l);  // next (
                 for (;;) {
@@ -515,7 +513,7 @@ Node *parse_while(Lexer *l) {
 
 void add_statement(Node *block, Node *stmt) {
     assert(block->kind == NodeKind::kBlock);
-    StatementListNode *stmtNode = mem::malloc<StatementListNode>();
+    StatementListNode *stmtNode = mem::gb_alloc<StatementListNode>();
     stmtNode->stmt = stmt;
     stmtNode->next = nullptr;
     if (block->block.head) {

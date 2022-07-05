@@ -19,7 +19,7 @@ gvn := :(a: u16) {
 crit_edge := :() {
     a := 1
     if a {
-	a = 2
+        a = 2
     }
     a = 3
     unused(a)
@@ -36,17 +36,13 @@ no_gvn := :(a: u16) {
 }
 */
 
-ident := :(num: u16) -> u16 {
-  ret num
-}
-
 /*
 // PRE through phi nodes
 test1 := :(a: u16, b: u16) {
     c := a + b
     if c {
-	b = c + 3
-	b = c
+        b = c + 3
+        b = c
     }
     e := b + 3
     unused(e)
@@ -58,9 +54,9 @@ test1 := :(a: u16, b: u16) {
 test2 := :(a: u16, b: u16) {
     c := a + b
     if c {
-	if c {
-	   b = c + 3
-	}
+        if c {
+           b = c + 3
+        }
     }
     d := c + 3
     unused(d)
@@ -72,9 +68,9 @@ test2 := :(a: u16, b: u16) {
 test3 := :(a: u16, b: u16) {
     c := a + b
     if c {
-	c = a + 3
+        c = a + 3
     } else {
-	e := a
+        e := a
         c = e + 3
     }
     d := a + 3
@@ -83,37 +79,90 @@ test3 := :(a: u16, b: u16) {
 */
 
 /*
+ident := :(num: u16) -> u16 {
+    ret num
+}
+
 loop1 := :() {
     a := ident(1)
     while a + 1{
         b := a + 1
-	if a {
-	    a = b + 1
-	}
+        if a {
+            a = b + 1
+        }
     }
 }
-*/
 
 loop2 := :() {
     a := ident(1)
     while a + 1 {
         b := a + 1
 
-	if a {
-	    c := a + b
-	    d := c
-	    e := a + d
-	    unused(e)
-	} else {
-	    a = b + 1
-	}
+        if a {
+            c := a + b
+            d := c
+            e := a + d
+            unused(e)
+        } else {
+            a = b + 1
+        }
 
-	f := a + b
-	g := f + a
-	unused(g)
-	h := ident(1)
-	i := f + h
-	k := i + b
-	unused(k)
+        f := a + b
+        g := f + a
+        unused(g)
+        h := ident(1)
+        i := f + h
+        k := i + b
+        unused(k)
     }
+}
+*/
+
+/*
+alias := :(a: u16) {
+    ptr := *a
+    if a {
+        // @ptr = 3
+    }
+    unusedp(ptr)
+    b := a
+    unused(b)
+}
+*/
+
+
+test := :() -> *u16 {
+    b := 3
+    ret *b
+}
+
+other := :() {
+    if test() {
+    }
+}
+
+
+simple := :(a: u16) -> u16 {
+    b := 5
+    unused(a)
+    c := *b
+    d := c
+    // e := d + d
+    // e := *b // *b + *b
+    e := @d
+    @d = e + 1
+    f := @c
+    unused(f)
+    while 1 {
+        b = 1
+        f = 2
+        while b {
+            b = 2
+            f = 5
+            break
+        }
+        b = a
+    }
+    b = b + 2
+    ret b
 }

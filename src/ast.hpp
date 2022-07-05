@@ -29,7 +29,7 @@ struct PtrType {
 };
 
 struct FuncType {
-    LList<Type *> paramTys;
+    LList<Type *> paramTys{};
     Type *retTy;
 };
 
@@ -51,6 +51,8 @@ extern Type *string;
 }  // namespace builtin_type
 
 const char *type_string(Type *type);
+
+size_t get_byte_size(Type *type);
 
 enum class NodeKind {
     kImport,

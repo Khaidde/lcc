@@ -13,7 +13,7 @@ struct DeclInfo;
 
 struct Scope {
     DeclInfo *declListHead;
-    LMap<LStringView, DeclInfo *, lstr_hash, lstr_equal> decls;
+    LMap<LStringView, DeclInfo *> decls;
 
     Node *owner;
 };

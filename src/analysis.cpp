@@ -19,7 +19,7 @@ Result scope_enter_func_bind_params(CompilationContext *cmp, Node *func) {
     scope_enter(cmp->scopeStack, func);
     for (size_t i = 0; i < func->func.params.size; i++) {
         Node *param = func->func.params[i];
-        DeclInfo *paramInfo = mem::malloc<DeclInfo>();
+        DeclInfo *paramInfo = mem::gb_alloc<DeclInfo>();
         paramInfo->isResolving = false;
         paramInfo->nextDecl = nullptr;
         paramInfo->declNode = param;
@@ -76,7 +76,7 @@ Result scope_exit_check_unused(CompilationContext *cmp) {
 }
 
 Type *create_type(TypeKind kind) {
-    Type *type = mem::p_malloc<Type>();
+    Type *type = mem::p_alloc<Type>();
     type->kind = kind;
     return type;
 }
@@ -361,7 +361,6 @@ Type *resolve_type(CompilationContext *cmp, Node *expr) {
         case NodeKind::kCall: return resolve_call(cmp, expr);
         case NodeKind::kFunc: {
             Type *funcTy = create_type(TypeKind::kFuncTy);
-            funcTy->funcTy.paramTys = {};
             if (expr->func.params.size) funcTy->funcTy.paramTys.init(expr->func.params.size);
             for (size_t i = 0; i < expr->func.params.size; i++) {
                 Node *param = expr->func.params[i];
@@ -413,6 +412,11 @@ Result resolve_decl_type(CompilationContext *cmp, DeclInfo *declInfo) {
             return kError;
         }
     }
+    /*
+    if (declInfo->declNode->decl.isDecl) {
+    // TODO: more thorough analysis of declaration lval
+    */
+
     if (declInfo->declNode->decl.staticTy) {
         if (simplify_type_alias(cmp, declInfo->declNode->decl.staticTy)) return kError;
         Type *staticTy = &declInfo->declNode->decl.staticTy->type;
@@ -500,7 +504,9 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
         }
         switch (stmt->kind) {
             case NodeKind::kDecl:
+
                 if (stmt->decl.isDecl) {
+                    assert(stmt->decl.lval->kind == NodeKind::kName);
                     assert(!stmt->decl.isGlobal);
                     if (DeclInfo *otherDeclInfo = decl_lookup(cmp, stmt->decl.lval->name.ident)) {
                         dx_err(at_node(cmp->currFile->finfo, stmt->decl.lval), "Redeclaration\n");
@@ -518,7 +524,7 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                         dx_err(at_node(cmp->currFile->finfo, stmt), "Local declaration cannot be marked as #extern\n");
                         return kError;
                     }
-                    DeclInfo *declInfo = mem::malloc<DeclInfo>();
+                    DeclInfo *declInfo = mem::gb_alloc<DeclInfo>();
                     declInfo->isResolving = false;
                     declInfo->isUsed = false;
                     declInfo->nextDecl = nullptr;
@@ -527,6 +533,9 @@ Result analyze_block(CompilationContext *cmp, Node *block) {
                     scope_bind(cmp->scopeStack, declInfo);
 
                     if (resolve_decl_type(cmp, declInfo)) return kError;
+
+                    // TODO: hack to make declaration lval name ref to itself
+                    stmt->decl.lval->name.ref = stmt;
                 } else {
                     assert(!stmt->decl.staticTy);
                     Type *lType = resolve_type(cmp, stmt->decl.lval);

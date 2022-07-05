@@ -8,23 +8,56 @@
 
 namespace lcc {
 
+using HashValue = uint32_t;
+
+template <typename K>
+struct HashFn {
+    static_assert(!sizeof(K), "No hash function implemented for type");
+    HashValue operator()(K) { return 0; }
+};
+
+template <typename K>
+struct HashFn<K *> {
+    HashValue operator()(K *ptr) { return (uintptr_t)(ptr) / sizeof(K); }
+};
+
+template <typename K>
+struct EqualFn {
+    static_assert(!sizeof(K), "No equal function implemented for type");
+    bool operator()(K, K) { return false; }
+};
+
+template <typename K>
+struct EqualFn<K *> {
+    bool operator()(K *ptr1, K *ptr2) { return ptr1 == ptr2; }
+};
+
 // Robin hood algorithm based hashmap
-template <typename K, typename V, uint32_t hash_func(K &), bool equal_func(K &, K &)>
+template <typename K, typename V, typename H = HashFn<K>, typename E = EqualFn<K>>
 struct LMap {
-private:
+    using Key = K;
+    using Value = V;
+
     struct Entry {
-        K key;
-        V val;
+        Key key;
+        Value val;
+    };
+
+    struct TableEntry {
+        Entry entry;
         size_t psl;  // Probe sequence length, psl=0 means entry is empty
     };
 
-public:
     void init() { init(8); }
 
     void init(size_t newCapacity) {
         capacity = newCapacity;
-        table = mem::c_malloc<Entry>(capacity);
+        table = mem::c_alloc<TableEntry>(capacity);
         clear();
+    }
+
+    void destroy() {
+        if (table) mem::c_free(table);
     }
 
     void clear() {
@@ -35,15 +68,15 @@ public:
         }
     }
 
-    V *try_put(K &key, V &val) {  // Returns duplicate key, val if found
+    Value *try_put(Key &key, Value &val) {  // Returns duplicate key, val if found
         // Load factor of 0.67...
         if ((size + 1) * 3 >= capacity << 1) {
-            Entry *oldTable = table;
+            TableEntry *oldTable = table;
             size_t oldCapacity = capacity;
             init(capacity << 1);
             for (size_t i = 0; i < oldCapacity; i++) {
                 if (oldTable[i].psl) {
-                    internal_try_put(oldTable[i].key, oldTable[i].val);
+                    internal_try_put(oldTable[i].entry.key, oldTable[i].entry.val);
                 }
             }
             mem::c_free(oldTable);
@@ -51,41 +84,36 @@ public:
         return internal_try_put(key, val);
     }
 
-    V *try_put(K &&key, V &&val) { return try_put(key, val); }
+    Value *try_put(Key &key, Value &&val) { return try_put(key, val); }
 
-    V *try_put(K &&key, V &val) { return try_put(key, val); }
+    Value *operator[](Key &&key) { return (*this)[key]; }
 
-    V *try_put(K &key, V &&val) { return try_put(key, val); }
-
-    V *operator[](K &&key) { return (*this)[key]; }
-
-    V *operator[](K &key) {
-        size_t ndx = hash_func(key) % capacity;
+    Value *operator[](Key &key) {
+        size_t ndx = hash(key) % capacity;
         for (size_t off = 0; off < maxPSL; off++) {
-            Entry *entry = &table[ndx];
-            if (entry->psl && equal_func(entry->key, key)) return &entry->val;
+            TableEntry *tentry = &table[ndx];
+            if (tentry->psl && equal(tentry->entry.key, key)) return &tentry->entry.val;
             ndx = (ndx + 1) % capacity;
         }
         return nullptr;
     }
 
-    V *remove(K &key) {
-        size_t ndx = hash_func(key) % capacity;
+    Value *remove(Key &key) {
+        size_t ndx = hash(key) % capacity;
         for (size_t off = 0; off < maxPSL; off++) {
-            Entry *entry = &table[ndx];
-            if (entry->psl && equal_func(entry->key, key)) {
+            TableEntry *tentry = &table[ndx];
+            if (tentry->psl && equal(tentry->entry.key, key)) {
                 for (;;) {
                     ndx = (ndx + 1) % capacity;
-                    Entry *next = &table[ndx];
+                    TableEntry *next = &table[ndx];
                     if (next->psl <= 1) {
-                        entry->psl = 0;
+                        tentry->psl = 0;
                         size--;
                         break;
                     }
-                    entry->key = next->key;
-                    entry->val = next->val;
-                    entry->psl = next->psl - 1;
-                    entry = next;
+                    tentry->entry = {next->key, next->val};
+                    tentry->psl = next->psl - 1;
+                    tentry = next;
                 }
                 break;
             }
@@ -94,61 +122,74 @@ public:
         return nullptr;
     }
 
-    void for_each(void(callback)(K &k, V &v)) {
-        for (size_t i = 0; i < capacity; i++) {
-            if (table[i].psl) {
-                callback(table[i].key, table[i].val);
-            }
+    struct Iterator {
+        Entry &operator*() const { return map->table[idx].entry; }
+
+        Iterator &operator++() {
+            idx = map->get_valid_entry_index(idx + 1);
+            return *this;
         }
+
+        friend bool operator==(const Iterator &a, const Iterator &b) {
+            assert(a.map == b.mpa);
+            return a.idx == b.idx;
+        }
+
+        friend bool operator!=(const Iterator &a, const Iterator &b) {
+            assert(a.map == b.map);
+            return a.idx != b.idx;
+        }
+
+        size_t idx;
+        LMap<K, V> *map;
+    };
+
+    Iterator begin() { return {get_valid_entry_index(0), this}; }
+
+    Iterator end() { return {capacity, this}; }
+
+    size_t get_valid_entry_index(size_t idx) {
+        while (idx < capacity && !table[idx].psl) {
+            idx++;
+        }
+        return idx;
     }
 
-    Entry *table{nullptr};
+    TableEntry *table{nullptr};
     size_t capacity{0};
     size_t size{0};
     size_t maxPSL{0};
+    H hash{};
+    E equal{};
 
 private:
-    V *internal_try_put(K key, V val) {
-        size_t ndx = hash_func(key) % capacity;
+    Value *internal_try_put(Key key, Value val) {
+        size_t ndx = hash(key) % capacity;
         for (size_t off = 0, p = 1; off < capacity; off++, p++) {
-            Entry *entry = &table[ndx];
-            if (entry->psl == 0) {
+            TableEntry *tentry = &table[ndx];
+            if (tentry->psl == 0) {
                 if (p > maxPSL) maxPSL = p;
-                *entry = {key, val, p};
+                *tentry = {{key, val}, p};
                 size++;
                 return nullptr;
             }
 
-            if (equal_func(entry->key, key)) return &entry->val;
+            if (equal(tentry->entry.key, key)) return &tentry->entry.val;
 
-            if (entry->psl < p) {
+            if (tentry->psl < p) {
                 if (p > maxPSL) maxPSL = p;
-                Entry temp = *entry;
-                *entry = {key, val, p};
-                key = temp.key;
-                val = temp.val;
+                TableEntry temp = *tentry;
+                *tentry = {{key, val}, p};
+                key = temp.entry.key;
+                val = temp.entry.val;
                 p = temp.psl;
             }
             ndx = (ndx + 1) % capacity;
         }
-        assert(false && "Map is full");
+        assert(!"Map is full");
         return nullptr;
     }
 };
-
-template <typename T>
-uint32_t ptr_hash(T *&ptr) {
-    uint32_t hash = (uintptr_t)(ptr) / sizeof(T);
-    return (hash << 5) - hash;
-}
-
-template <typename T>
-bool ptr_equal(T *&ptr1, T *&ptr2) {
-    return ptr1 == ptr2;
-}
-
-template <typename K, typename V>
-using LPtrMap = LMap<K *, V, ptr_hash, ptr_equal>;
 
 }  // namespace lcc
 

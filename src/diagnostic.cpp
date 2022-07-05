@@ -48,14 +48,14 @@ DxInfo at_node(FileInfo *finfo, Node *node) {
 namespace {
 
 void dx_out(DxInfo &dxinfo) {
-    LStringView *lines = mem::malloc<LStringView>(numContextLines);
+    LStringView *lines = mem::gb_alloc<LStringView>(numContextLines);
     size_t back{0};
 
     // Print file path if it exists
     if (dxinfo.finfo->path) {
-        print_color(kAnsiColorGrey);
-        printf("  in %s:\n", dxinfo.finfo->path);
-        reset_print_color();
+        set_color(kColorWhite);
+        printf("in %s:\n", dxinfo.finfo->path);
+        reset_color();
     }
 
     // Get line, col info as well as populate line queue with context info BEFORE the error line
@@ -94,7 +94,7 @@ void dx_out(DxInfo &dxinfo) {
         back = (back + 1) % numContextLines;
 
         int curLineNum = line - numContextLines + 1 + i;
-        if (curLineNum >= 1) printf("  %4d %.*s\n", curLineNum, curLine.len, curLine.src);
+        if (curLineNum >= 1) printf("%4d %.*s\n", curLineNum, curLine.len, curLine.src);
     }
 
     // Add spaces before the error cursor
@@ -108,10 +108,10 @@ void dx_err(DxInfo dxinfo, const char *format, ...) {
     dx_out(dxinfo);
 
     // Print error cursor and message
-    print_color(kAnsiColorRed);
+    set_color(kColorRed);
     for (size_t i = 0; i < dxinfo.len; i++) printf("^");
     printf(" error: ");
-    reset_print_color();
+    reset_color();
 
     va_list(ap);
     va_start(ap, format);
@@ -123,10 +123,10 @@ void dx_note(DxInfo dxinfo, const char *format, ...) {
     dx_out(dxinfo);
 
     // Print error cursor and message
-    print_color(kAnsiColorGrey);
+    set_color(kColorWhite);
     for (size_t i = 0; i < dxinfo.len; i++) printf("^");
     printf(" note: ");
-    reset_print_color();
+    reset_color();
 
     va_list(ap);
     va_start(ap, format);

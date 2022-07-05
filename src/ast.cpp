@@ -49,22 +49,35 @@ const char *type_string(Type *type) {
     }
 }
 
+size_t get_byte_size(Type *type) {
+    switch (type->kind) {
+        case TypeKind::kNone: return 0;
+        case TypeKind::kType: return 0;
+        case TypeKind::kNamed:
+            if (type->name.ref == builtin_type::u16->name.ref) return 2;
+            assert(!"TODO: calculate size of type referred to by name");
+        case TypeKind::kPtr: return 2;
+        case TypeKind::kFuncTy: assert(!"TODO: calculate size of funcTy");
+    }
+    unreachable();
+}
+
 namespace {
 
 void r_print_ast(Node *node, size_t depth) {
-    print_color(kAnsiColorGreen);
+    set_color(kColorGreen);
     printf("%0*s%s", depth * 2, "", node_kind_string(node->kind));
-    reset_print_color();
+    reset_color();
     switch (node->kind) {
         case NodeKind::kImport:
-            print_color(kAnsiColorBlue);
+            set_color(kColorBlue);
             printf(" '%s' as %s\n", lstr_raw_str(node->import.package), lstr_raw_str(node->import.alias));
-            reset_print_color();
+            reset_color();
             break;
         case NodeKind::kDecl:
-            print_color(kAnsiColorGrey);
+            set_color(kColorWhite);
 
-            print_color(kAnsiColorMagenta);
+            set_color(kColorMagenta);
             if (node->decl.isDecl) {
                 printf(" <declare>");
             } else {
@@ -72,55 +85,55 @@ void r_print_ast(Node *node, size_t depth) {
             }
 
             if (node->decl.resolvedTy) {
-                print_color(kAnsiColorYellow);
+                set_color(kColorYellow);
                 printf(" '%s'", type_string(node->decl.resolvedTy));
             } else if (node->decl.staticTy) {
-                print_color(kAnsiColorRed);
+                set_color(kColorRed);
                 printf(" '%s'", type_string(&node->decl.staticTy->type));
             } else if (node->decl.isDecl) {
                 printf(" unknown");
             }
             if (node->decl.isExtern) {
-                reset_print_color();
+                reset_color();
                 printf(" #extern");
             }
             printf("\n");
-            reset_print_color();
+            reset_color();
 
             r_print_ast(node->decl.lval, depth + 1);
             if (node->decl.rval) r_print_ast(node->decl.rval, depth + 1);
             break;
         case NodeKind::kType:
-            print_color(kAnsiColorRed);
+            set_color(kColorRed);
             printf("'%s'\n", type_string(&node->type));
-            reset_print_color();
+            reset_color();
             break;
         case NodeKind::kIntLit:
-            print_color(kAnsiColorBlue);
+            set_color(kColorBlue);
             printf(" %d\n", node->intLit.intVal);
-            reset_print_color();
+            reset_color();
             break;
         case NodeKind::kStrLit:
-            print_color(kAnsiColorBlue);
+            set_color(kColorBlue);
             printf(" %s\n", lstr_raw_str(node->strLit.strVal));
-            reset_print_color();
+            reset_color();
             break;
         case NodeKind::kName:
-            print_color(kAnsiColorBlue);
+            set_color(kColorBlue);
             printf(" '%.*s'\n", node->name.ident.len, node->name.ident.src);
-            reset_print_color();
+            reset_color();
             break;
         case NodeKind::kPrefix:
-            print_color(kAnsiColorBlue);
+            set_color(kColorBlue);
             printf(" '%s'\n", token_type_string(node->prefix.op));
-            reset_print_color();
+            reset_color();
 
             r_print_ast(node->prefix.inner, depth + 1);
             break;
         case NodeKind::kInfix:
-            print_color(kAnsiColorBlue);
+            set_color(kColorBlue);
             printf(" '%s'\n", token_type_string(node->infix.op));
-            reset_print_color();
+            reset_color();
 
             r_print_ast(node->infix.left, depth + 1);
             r_print_ast(node->infix.right, depth + 1);
@@ -135,9 +148,9 @@ void r_print_ast(Node *node, size_t depth) {
             break;
         case NodeKind::kFunc:
             if (node->func.staticRetTy) {
-                print_color(kAnsiColorYellow);
+                set_color(kColorYellow);
                 printf(" '%s'", type_string(&node->func.staticRetTy->type));
-                reset_print_color();
+                reset_color();
             }
             printf("\n");
 
@@ -188,9 +201,9 @@ void r_print_ast(Node *node, size_t depth) {
         case NodeKind::kLoopBr:
             printf(" <%s>", node->loopbr.isBreak ? "break" : "continue");
             if (node->loopbr.label.src) {
-                print_color(kAnsiColorYellow);
+                set_color(kColorYellow);
                 printf(" %s", lstr_raw_str(node->loopbr.label));
-                reset_print_color();
+                reset_color();
             }
             printf("\n");
             break;

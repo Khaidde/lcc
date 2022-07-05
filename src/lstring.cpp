@@ -1,5 +1,7 @@
 #include "lstring.hpp"
 
+#include "print.hpp"
+
 namespace lcc {
 
 LString lstr_create(const char *str) {
@@ -23,7 +25,7 @@ LString lstr_create(LStringView &strView) {
 const char *lstr_raw_str(LStringView &strView) { return lstr_create(strView).data; }
 
 const char *lstr_raw_view(LString &src, size_t off, size_t len) {
-    char *data = mem::c_malloc<char>(len + 1);
+    char *data = mem::c_alloc<char>(len + 1);
     strncpy(data, src.data + off, len);
     data[len] = '\0';
     return data;
@@ -47,13 +49,7 @@ void lstr_cat(LString &dest, LStringView &view) {
 
 LStringView lstr_view(const char *str, size_t off, size_t len) { return {str + off, len}; }
 
-uint32_t lstr_hash(LStringView &str) {
-    uint32_t hash = 1;
-    for (size_t i = 0; i < str.len; i++) {
-        hash = ((hash << 5) - hash) + (uint32_t)str.src[i];
-    }
-    return hash;
-}
+void lstr_print(LStringView &strView) { printf("%.*s", strView.len, strView.src); }
 
 bool lstr_equal(LStringView &str1, LStringView &str2) {
     if (str1.len != str2.len) return false;

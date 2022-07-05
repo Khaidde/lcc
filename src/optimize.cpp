@@ -1,9 +1,505 @@
 #include "optimize.hpp"
 
 #include "map.hpp"
+#include "print.hpp"
 #include "util.hpp"
 
 namespace lcc {
+
+namespace cfg_opt {
+
+/*
+ * Handles several tasks related to canonicalizing a functions cfg:
+ * - rpo data structure for traversal
+ * - initializing predecessor list
+ * - numbering basic block id in rpo order
+ * - simple edge merging optimization (if block's successor has 1 predecessor, merge)
+ * - assert that there are no critical edges
+ */
+void canonicalize(Function &fn) {
+    mem::ArenaAllocator<512> localAlloc;
+
+    BasicBlock **stack = mem::alloc<BasicBlock *>(localAlloc, fn.numBlocks - 1);
+    BasicBlock **firstRpo = mem::alloc<BasicBlock *>(localAlloc, fn.numBlocks);
+    size_t *numPredAdded = mem::alloc<size_t>(localAlloc, fn.numBlocks);
+
+    Bitset visited;
+    visited.init(localAlloc, fn.numBlocks);
+    stack[0] = fn.entry;
+    fn.entry->predCnt = 0;
+    numPredAdded[fn.entry->idx] = 0;
+
+    // DFS to initialize first rpo ordering without merging optimizations
+    // Also keep track of the number of predecessors and initialize pred data structure
+    size_t stackSize = 1;
+    while (stackSize) {
+        BasicBlock *curr = stack[--stackSize];
+        curr->pred = nullptr;
+
+        firstRpo[curr->idx] = curr;
+        for (auto succ = succ_begin(curr); succ != succ_end(curr); ++succ) {
+            if (!visited[(*succ)->idx]) {
+                (*succ)->predCnt = 0;
+                numPredAdded[(*succ)->idx] = 0;
+
+                stack[stackSize++] = *succ;
+                visited.set((*succ)->idx);
+            }
+            (*succ)->predCnt++;
+        }
+    }
+
+    // Initialize predecessor lists
+    fn.rpo = firstRpo;
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        for (auto succ = succ_begin(*bb); succ != succ_end(*bb); ++succ) {
+            if (!(*succ)->pred) {
+                (*succ)->pred = mem::c_alloc<BasicBlock *>((*succ)->predCnt);
+            }
+            (*succ)->pred[numPredAdded[(*succ)->idx]++] = *bb;
+        }
+    }
+
+    // Merge blocks whose single successor has one predecessor
+    size_t numMerged = 0;
+    for (size_t i = 0; i < fn.numBlocks; i++) {
+        // Traverse from exit to entry to ensure merges
+        // are propagated backwards correctly
+        BasicBlock *curr = firstRpo[fn.numBlocks - i - 1];
+        if (succ_count(curr) == 1) {
+            BasicBlock *succ = *succ_begin(curr);
+            if (succ->predCnt == 1) {
+                for (auto ss = succ_begin(succ); ss != succ_end(succ); ++ss) {
+                    for (size_t ii = 0; ii < (*ss)->predCnt; ii++) {
+                        BasicBlock *succsuccpred = (*ss)->pred[ii];
+                        if (succsuccpred == succ) {
+                            (*ss)->pred[ii] = curr;
+                        }
+                    }
+                }
+                if (curr->end) {
+                    curr->end->next = succ->start;
+                } else {
+                    curr->start = succ->start;
+                }
+                curr->end = succ->end;
+                if (succ->start) {
+                    succ->start->prev = curr->end;
+                }
+                curr->term = succ->term;
+                if (succ == fn.exit) fn.exit = curr;
+                mem::c_free(succ->pred);
+                succ->predCnt = 0;
+                numMerged++;
+            }
+        }
+    }
+
+    // Initialize rpo
+    fn.rpo = mem::c_alloc<BasicBlock *>(fn.numBlocks - numMerged);
+    size_t rpoIdx = 0;
+    for (size_t i = 0; i < fn.numBlocks; i++) {
+        if (firstRpo[i] == fn.entry || firstRpo[i]->predCnt) {
+            fn.rpo[rpoIdx] = firstRpo[i];
+            fn.rpo[rpoIdx]->idx = rpoIdx;
+            rpoIdx++;
+        } else {
+            mem::p_free(firstRpo[i]);
+        }
+    }
+    fn.numBlocks -= numMerged;
+
+#if DBG
+    printf("Merged %d edge(s) on first pass:\n", numMerged);
+#endif
+
+    // Ensure critical edge doesn't exist
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        if (succ_count(*bb) > 1) {
+            for (auto succ = succ_begin(*bb); succ != succ_end(*bb); ++succ) {
+                if ((*succ)->predCnt > 1) {
+                    printf("CriticalEdge: %d->%d\n", (*bb)->idx, (*succ)->idx);
+                    assert(false);
+                }
+            }
+        }
+    }
+
+    dominator::invalidate_domtree(fn);
+    dominator::invalidate_pdomtree(fn);
+    dominator::invalidate_domfrontier(fn);
+
+    return;
+}
+
+}  // namespace cfg_opt
+
+namespace dominator {
+
+namespace generic {
+
+// Simple, Fast Dominance Algorithm
+// by Cooper et al.
+template <typename D>
+void compute_dominance(Function &fn) {
+    using DomTraversal = D;
+
+    mem::ArenaAllocator<256> localAlloc;
+
+    // post order numberings
+    size_t *pnum = mem::alloc<size_t>(localAlloc, fn.numBlocks);
+    for (size_t p = 0; p < fn.numBlocks; p++) {
+        pnum[DomTraversal::get_block(fn, p)->idx] = p;
+    }
+
+    BasicBlock **&idom = DomTraversal::idom(fn);
+    idom = mem::c_alloc<BasicBlock *>(fn.numBlocks);
+    for (size_t i = 0; i < fn.numBlocks; i++) {
+        idom[i] = nullptr;
+    }
+    BasicBlock *entry = DomTraversal::get_block(fn, 0);
+    idom[entry->idx] = entry;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+
+        // For each basic block excluding entry
+        for (size_t i = 1; i < fn.numBlocks; i++) {
+            BasicBlock *bb = DomTraversal::get_block(fn, i);
+
+            BasicBlock *newIdom = nullptr;
+            for (auto pred = DomTraversal::pred_begin(bb); pred != DomTraversal::pred_end(bb); ++pred) {
+                if (idom[(*pred)->idx] != nullptr) {
+                    if (newIdom) {
+                        // Calculate dominator set intersection between predecessor
+                        // and existing dominator set
+                        BasicBlock *b1 = *pred;
+                        BasicBlock *b2 = newIdom;
+                        while (b1 != b2) {
+                            while (pnum[b1->idx] > pnum[b2->idx]) {
+                                b1 = idom[b1->idx];
+                            }
+                            while (pnum[b1->idx] < pnum[b2->idx]) {
+                                b2 = idom[b2->idx];
+                            }
+                        }
+                        newIdom = b1;
+                    } else {
+                        newIdom = *pred;
+                    }
+                }
+            }
+            if (idom[bb->idx] != newIdom) {
+                idom[bb->idx] = newIdom;
+                changed = true;
+            }
+        }
+    }
+}
+
+}  // namespace generic
+
+bool is_dom_valid(Function &fn) { return fn.dom != nullptr; }
+
+bool is_pdom_valid(Function &fn) { return fn.pdom != nullptr; }
+
+bool is_domfrontier_valid(Function &fn) { return fn.domf != nullptr; }
+
+void invalidate_domtree(Function &fn) {
+    if (is_dom_valid(fn)) {
+        mem::c_free(fn.dom);
+        fn.dom = nullptr;
+    }
+    fn.dom = nullptr;
+}
+
+void invalidate_pdomtree(Function &fn) {
+    if (is_pdom_valid(fn)) {
+        mem::c_free(fn.pdom);
+        fn.pdom = nullptr;
+    }
+}
+
+void invalidate_domfrontier(Function &fn) {
+    if (is_domfrontier_valid(fn)) {
+        for (size_t i = 0; i < fn.numBlocks; i++) {
+            fn.domf[i].destroy(mem::cAlloc);
+        }
+        mem::c_free(fn.domf);
+        fn.domf = nullptr;
+    }
+}
+
+struct DomInfo {
+    static BasicBlock **&idom(Function &fn) { return fn.dom; }
+    static BasicBlock *get_block(Function &fn, size_t idx) { return fn.rpo[idx]; }
+    static ListIterator<BasicBlock *> pred_begin(BasicBlock *block) { return lcc::pred_begin(block); }
+    static ListIterator<BasicBlock *> pred_end(BasicBlock *block) { return lcc::pred_end(block); };
+};
+
+void compute_domtree(Function &fn) {
+    if (is_dom_valid(fn)) return;
+    generic::compute_dominance<DomInfo>(fn);
+}
+
+struct PDomInfo {
+    static BasicBlock **&idom(Function &fn) { return fn.pdom; }
+    static BasicBlock *get_block(Function &fn, size_t idx) { return fn.po[idx]; }
+    static ListIterator<BasicBlock *> pred_begin(BasicBlock *block) { return lcc::succ_begin(block); }
+    static ListIterator<BasicBlock *> pred_end(BasicBlock *block) { return lcc::succ_end(block); };
+};
+
+void compute_pdomtree(Function &fn) {
+    assert(!"TODO: implement pdom and post-ordering for pdom calculation");
+    if (is_pdom_valid(fn)) return;
+    generic::compute_dominance<PDomInfo>(fn);
+}
+
+// Simple Dominance Frontier algorithm
+// by Cooper et al.
+void compute_domfrontier(Function &fn) {
+    if (is_domfrontier_valid(fn)) return;
+
+    compute_domtree(fn);
+    assert(is_dom_valid(fn));
+
+    fn.domf = mem::c_alloc<Bitset>(fn.numBlocks);
+    for (size_t i = 0; i < fn.numBlocks; i++) {
+        fn.domf[i].init(mem::cAlloc, fn.numBlocks);
+    }
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        if ((*bb)->predCnt >= 2) {
+            for (auto pred = pred_begin(*bb); pred != pred_end(*bb); ++pred) {
+                BasicBlock *runner = *pred;
+                while (runner != fn.dom[(*bb)->idx]) {
+                    fn.domf[runner->idx].set((*bb)->idx);
+                    runner = fn.dom[runner->idx];
+                }
+            }
+        }
+    }
+}
+
+void print_domtree(Function &fn) {
+    assert(is_dom_valid(fn));
+
+    printf("Domtree for \"");
+    lstr_print(fn.ident);
+    printf("\":\n");
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        printf("\tdom[B%d] = B%d\n", (*bb)->idx, fn.dom[(*bb)->idx]->idx);
+    }
+}
+
+void print_dominates(Function &fn) {
+    assert(is_dom_valid(fn));
+
+    printf("Domination Sets for \"");
+    lstr_print(fn.ident);
+    printf("\":\n");
+
+    mem::ArenaAllocator<512> localAlloc;
+    LList<BlockIdx> *dominates = mem::alloc<LList<BlockIdx>>(localAlloc, fn.numBlocks);
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        dominates[(*bb)->idx] = {};
+        dominates[(*bb)->idx].add((*bb)->idx);
+
+        BasicBlock *dom = fn.dom[(*bb)->idx];
+        while (dom->idx) {
+            dominates[dom->idx].add((*bb)->idx);
+            dom = fn.dom[dom->idx];
+        }
+    }
+
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        printf("\tdominates[B%d] = ", (*bb)->idx);
+
+        LList<BlockIdx> &domSet = dominates[(*bb)->idx];
+        for (size_t i = 0; i < domSet.size; i++) {
+            printf("B%d", domSet[i]);
+            if (i + 1 < domSet.size) {
+                printf(", ");
+            }
+        }
+        printf("\n");
+    }
+}
+
+void print_domfrontier(Function &fn) {
+    assert(is_domfrontier_valid(fn));
+
+    printf("Dominance Frontier Sets for \"");
+    lstr_print(fn.ident);
+    printf("\":\n");
+
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        printf("\tdf[B%d] = ", (*bb)->idx);
+
+        Bitset &dfSet = fn.domf[(*bb)->idx];
+        auto bid = dfSet.begin();
+        while (bid != dfSet.end()) {
+            printf("B%d", *bid);
+            ++bid;
+            if (bid != dfSet.end()) {
+                printf(", ");
+            } else {
+                break;
+            }
+        }
+        printf("\n");
+    }
+}
+
+}  // namespace dominator
+
+namespace mem_elimination {
+
+using VariableIdx = size_t;
+
+struct VariableInfo {
+    // TODO: add valuable information here
+    VariableIdx idx;  // TODO: delete this
+};
+
+void pass(Opt &opt, Function &fn) {
+    dominator::compute_domfrontier(fn);
+    assert(dominator::is_domfrontier_valid(fn));
+
+    dominator::print_domtree(fn);
+    dominator::print_dominates(fn);
+    dominator::print_domfrontier(fn);
+
+    mem::ArenaAllocator<512> localAlloc;
+
+    Bitset invalidVarIdx;
+    size_t numAllocs = 0;
+    LList<VariableInfo> allocInsts;
+    LMap<Inst *, VariableIdx> allocInstsMap;
+    allocInstsMap.init();
+
+    // Determine local variables that can be optimized
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        for (Inst *inst = (*bb)->start; inst; inst = inst->next) {
+            switch (inst->kind) {
+                case Inst::Kind::kAlloc:
+                    VariableInfo vInfo;
+                    vInfo.idx = numAllocs++;
+                    allocInsts.add(vInfo);
+                    allocInstsMap.try_put(inst, vInfo.idx);
+                    if (!inst->next || inst->next->kind != Inst::Kind::kAlloc) {
+                        invalidVarIdx.init(localAlloc, numAllocs);
+                    }
+                    break;
+                case Inst::Kind::kStore:
+                    if (inst->st.src.kind == Opd::Kind::kReg) {
+                        if (inst->st.src.regVal->kind == Inst::Kind::kAlloc) {
+                            VariableIdx *vidx = allocInstsMap[inst->st.src.regVal];
+                            assert(vidx);
+                            invalidVarIdx.set(*vidx);
+                        }
+                    }
+                    break;
+                default: break;
+            }
+        }
+    }
+
+    // No allocations so there is nothing to optimize
+    if (numAllocs == 0) return;
+
+    for (auto bit = invalidVarIdx.begin(); bit != invalidVarIdx.end(); ++bit) {
+        printf("::var idx=%d is invalidated\n", *bit);
+    }
+
+    // Collect all uses and defs of allocated pointers (arguments, local variables, etc.)
+    LList<BasicBlock *> blocksWithDefinition;
+    blocksWithDefinition.init(fn.numBlocks);
+    Bitset *defSets = mem::alloc<Bitset>(localAlloc, fn.numBlocks);
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        defSets[(*bb)->idx].init(localAlloc, numAllocs);
+        for (Inst *inst = (*bb)->start; inst; inst = inst->next) {
+            switch (inst->kind) {
+                case Inst::Kind::kStore:
+                    assert(inst->st.addr.kind == Opd::Kind::kReg);
+                    if (VariableIdx *vidx = allocInstsMap[inst->st.addr.regVal]) {
+                        defSets[(*bb)->idx].set(*vidx);
+                        break;
+                    }
+                default: break;
+            }
+        }
+        defSets[(*bb)->idx].and_not(invalidVarIdx);
+        if (!defSets[(*bb)->idx].all_zero()) {
+            blocksWithDefinition.add(*bb);
+        }
+    }
+
+    Bitset *phiSets = mem::alloc<Bitset>(localAlloc, numAllocs);
+    for (size_t i = 0; i < numAllocs; i++) {
+        phiSets[i].init(localAlloc, fn.numBlocks);
+    }
+
+    Bitset domFUnion, finalPhiSet;
+    domFUnion.init(localAlloc, fn.numBlocks);
+    finalPhiSet.init(localAlloc, fn.numBlocks);
+
+    LMap<Inst *, VariableIdx> phiInstVarIdxMap;
+    phiInstVarIdxMap.init();
+
+    LList<BlockIdx> worklist;
+
+    for (size_t i = 0; i < blocksWithDefinition.size; i++) {
+        BasicBlock *bb = blocksWithDefinition[i];
+
+        // Calculate union of dominance frontiers for current block
+        domFUnion.reset();
+        worklist.size = 0;
+        worklist.add(bb->idx);
+        while (worklist.size) {
+            Bitset &domf = fn.domf[worklist.pop_back()];
+
+            for (auto bidx = domf.begin(); bidx != domf.end(); ++bidx) {
+                if (domFUnion.set(*bidx)) {
+                    worklist.add(*bidx);
+                }
+            }
+        }
+
+        if (domFUnion.all_zero()) continue;
+
+        // For each variable with a definition in this block
+        // insert phi nodes where appropriate
+        for (auto vidx = defSets[bb->idx].begin(); vidx != defSets[bb->idx].end(); ++vidx) {
+            // Do not add phi node if phi node already exists for vidx
+            finalPhiSet.and_not(domFUnion, phiSets[*vidx]);
+
+            for (auto bidx = finalPhiSet.begin(); bidx != finalPhiSet.end(); ++bidx) {
+                BasicBlock *curr = fn.rpo[*bidx];
+
+                Inst *phi = create_inst(Inst::Kind::kPhi);
+                phi->phi.joins.init(curr->predCnt);
+                push_front_inst(opt, curr, phi, true);
+                phiInstVarIdxMap.try_put(phi, *vidx);
+
+                // Mark block as already having a phi node for the variable
+                phiSets[*vidx].set(*bidx);
+            }
+        }
+    }
+
+    allocInsts.destroy();
+    allocInstsMap.destroy();
+    useDefInsts.destroy();
+
+    blocksWithDefinition.destroy();
+
+    worklist.destroy();
+    phiInstVarIdxMap.destroy();
+}
+
+}  // namespace mem_elimination
+
+#if 0
 
 namespace opt {
 
@@ -73,6 +569,19 @@ void global_canon(CFG &cfg) {
 // Dead Code Elimination
 namespace dce {
 
+struct DCE {
+    LPtrMap<Inst, size_t> liveMap;
+    LList<Inst *> usedInstsList;
+};
+
+void mark_opd(DCE &dce, Opd &opd) {
+    if (opd.kind == Opd::Kind::kReg) {
+        if (!dce.liveMap.try_put(opd.regVal, dce.usedInstsList.size)) {
+            dce.usedInstsList.add(opd.regVal);
+        }
+    }
+}
+
 /*
  * Assumes all instructions are initially dead. Finds starting live instructions with arguments and
  * instructions with side-effects (calls and returns) and marks them as live. Iteratively mark the
@@ -80,10 +589,9 @@ namespace dce {
  * Final pass removes all instructions not marked as alive
  */
 void pass_mark_pessismistic(CFG &cfg) {
-    LPtrMap<Inst, size_t> liveMap;
-    liveMap.init();
-    LList<Inst *> usedInstsList;
-    usedInstsList = {};
+    DCE dce;
+    dce.liveMap.init();
+    dce.usedInstsList = {};
 
     for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
         Inst *curr = (*bb)->start;
@@ -91,77 +599,50 @@ void pass_mark_pessismistic(CFG &cfg) {
             switch (curr->kind) {
                 case Inst::Kind::kArg:
                 case Inst::Kind::kCall:
-                    assert(!liveMap.try_put(curr, usedInstsList.size));
-                    usedInstsList.add(curr);
+                    assert(!dce.liveMap.try_put(curr, dce.usedInstsList.size));
+                    dce.usedInstsList.add(curr);
                     break;
                 default: break;
             }
             curr = curr->next;
         }
         if ((*bb)->term.kind == Terminator::Kind::kCond) {
-            Opd &predicate = (*bb)->term.cond.predicate;
-            if (predicate.kind == Opd::Kind::kReg) {
-                if (!liveMap.try_put(predicate.regVal, usedInstsList.size)) {
-                    usedInstsList.add(predicate.regVal);
-                }
-            }
+            mark_opd(dce, (*bb)->term.cond.predicate);
         }
     }
     for (size_t i = 0; i < cfg.exit->term.ret.args.size; i++) {
-        Opd &retOpd = cfg.exit->term.ret.args[i].opd;
-        if (retOpd.kind == Opd::Kind::kReg) {
-            if (!liveMap.try_put(retOpd.regVal, usedInstsList.size)) {
-                usedInstsList.add(retOpd.regVal);
-            }
-        }
+        mark_opd(dce, cfg.exit->term.ret.args[i].opd);
     }
 
-    for (size_t i = 0; i < usedInstsList.size; i++) {
-        Inst *marked = usedInstsList[i];
+    for (size_t i = 0; i < dce.usedInstsList.size; i++) {
+        Inst *marked = dce.usedInstsList[i];
         switch (marked->kind) {
             case Inst::Kind::kPhi:
                 for (size_t i = 0; i < marked->phi.joins.size; i++) {
                     Inst *ref = marked->phi.joins[i].ref;
-                    if (!liveMap.try_put(ref, usedInstsList.size)) {
-                        usedInstsList.add(ref);
+                    if (!dce.liveMap.try_put(ref, dce.usedInstsList.size)) {
+                        dce.usedInstsList.add(ref);
                     }
                 }
                 break;
             case Inst::Kind::kArg: break;
-            case Inst::Kind::kAssign:
-                if (marked->assign.src.kind == Opd::Kind::kReg) {
-                    if (!liveMap.try_put(marked->assign.src.regVal, usedInstsList.size)) {
-                        usedInstsList.add(marked->assign.src.regVal);
-                    }
-                }
-                break;
+            case Inst::Kind::kAssign: mark_opd(dce, marked->assign.src); break;
             case Inst::Kind::kBin:
-                if (marked->bin.left.kind == Opd::Kind::kReg) {
-                    if (!liveMap.try_put(marked->bin.left.regVal, usedInstsList.size)) {
-                        usedInstsList.add(marked->bin.left.regVal);
-                    }
-                }
-                if (marked->bin.right.kind == Opd::Kind::kReg) {
-                    if (!liveMap.try_put(marked->bin.right.regVal, usedInstsList.size)) {
-                        usedInstsList.add(marked->bin.right.regVal);
-                    }
-                }
+                mark_opd(dce, marked->bin.left);
+                mark_opd(dce, marked->bin.right);
                 break;
             case Inst::Kind::kCall:
                 for (size_t i = 0; i < marked->call.args.size; i++) {
-                    if (marked->call.args[i].kind == Opd::Kind::kReg) {
-                        if (!liveMap.try_put(marked->call.args[i].regVal, usedInstsList.size)) {
-                            usedInstsList.add(marked->call.args[i].regVal);
-                        }
-                    }
+                    mark_opd(dce, marked->call.args[i]);
                 }
                 break;
+            case Inst::Kind::kLoad: mark_opd(dce, marked->ld.src); break;
         }
     }
     for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
         Inst *curr = (*bb)->start;
         while (curr) {
-            if (!liveMap[curr]) {
+            if (!dce.liveMap[curr]) {
                 free_inst(curr);
             }
             curr = curr->next;
@@ -558,6 +1039,14 @@ void buildset_avail(GVNPREContext &gvn) {
                     // Take conservative approach (always generate new val)
                     // because call may have side-effects
                     // TODO: perform purity analysis on function
+                    Value val = gvn.nextVal++;
+                    gvn.tempValTable.try_put(currInst, val);
+                    currTmpGen.insert(val, currInst);
+                    currAvailOut.val_insert(val, currInst);
+                    break;
+                }
+                case Inst::Kind::kLoad: {
+                    // Treat loads conservatively
                     Value val = gvn.nextVal++;
                     gvn.tempValTable.try_put(currInst, val);
                     currTmpGen.insert(val, currInst);
@@ -962,20 +1451,25 @@ void pass(CFG &cfg) {
 }
 
 }  // namespace gvnpre
+#endif
 
-#define PASS(name, call, args)                                             \
+#define PASS(name, call, ...)                                              \
     do {                                                                   \
         printf("\n==================== " #name " ====================\n"); \
-        start_pass(#name);                                                 \
-        call(args);                                                        \
-        print_cfg(cfg);                                                    \
+        start_pass(opt, #name);                                            \
+        call(__VA_ARGS__);                                                 \
+        print_function(fn);                                                \
     } while (0)
 
-void optimize(CFG &cfg) {
-    PASS(Init, (void), nullptr);
+void optimize(Opt &opt, Function &fn) {
+    // PASS(Init, (void), nullptr);
+    PASS(CFGCanon, cfg_opt::canonicalize, fn);
+    PASS(MemElim, mem_elimination::pass, opt, fn);
+    /*
     PASS(Canon, opt::global_canon, cfg);
     PASS(GvnPre, gvnpre::pass, cfg);
     PASS(Dce, dce::pass_mark_pessismistic, cfg);
+    */
 }
 
 }  // namespace lcc

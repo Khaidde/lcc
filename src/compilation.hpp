@@ -27,7 +27,7 @@ struct File {
     FileInfo *finfo;
 
     Node *importListHead;
-    LMap<LStringView, Node *, lstr_hash, lstr_equal> imports;
+    LMap<LStringView, Node *> imports;
 };
 
 struct DeclInfo {
@@ -41,7 +41,7 @@ struct DeclInfo {
 
 struct Package {
     LList<DeclInfo *> globalDeclList;  // For efficient iteration of all globalDecls
-    LMap<LStringView, DeclInfo *, lstr_hash, lstr_equal> globalDecls;
+    LMap<LStringView, DeclInfo *> globalDecls;
 
     LList<File *> files;
 };
@@ -49,7 +49,7 @@ struct Package {
 struct CompilationContext {
     Package *preloadPkg;
 
-    LMap<LStringView, Package *, lstr_hash, lstr_equal> packageMap;
+    LMap<LStringView, Package *> packageMap;
 
     struct ScopeStack *scopeStack;
 

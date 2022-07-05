@@ -2,26 +2,27 @@
 #define LCC_PRINT_HPP
 
 #include <cstdio>
+#include <util.hpp>
 
 namespace lcc {
 
-constexpr const char *header = "  lcc: ";
-constexpr size_t kHeaderLen = 7;
-
-constexpr const char *kAnsiColorRed = "\x1b[31m";
-constexpr const char *kAnsiColorGreen = "\x1b[32m";
-constexpr const char *kAnsiColorYellow = "\x1b[33m";
-constexpr const char *kAnsiColorBlue = "\x1b[34m";
-constexpr const char *kAnsiColorMagenta = "\x1b[35m";
-constexpr const char *kAnsiColorCyan = "\x1b[36m";
-constexpr const char *kAnsiColorGrey = "\x1b[90m";
-constexpr const char *kAnsiColorReset = "\x1b[0m";
+constexpr const char *header = "lcc: ";
+constexpr size_t kHeaderLen = comptime_strlen(header);
 
 extern bool printUseColor;
 
-void print_color(const char *color);
+using Color = size_t;
+extern Color kColorRed;
+extern Color kColorGreen;
+extern Color kColorYellow;
+extern Color kColorBlue;
+extern Color kColorMagenta;
+extern Color kColorCyan;
+extern Color kColorWhite;
 
-void reset_print_color();
+void set_color(Color color);
+
+void reset_color();
 
 [[noreturn]] void unreachable();
 
