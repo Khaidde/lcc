@@ -154,7 +154,7 @@ simple := :(a: u16) -> u16 {
     f := @c
     unused(f)
     while 1 {
-        b = 1
+        b = f
         f = 2
         while b {
             b = 2

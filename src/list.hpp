@@ -40,7 +40,12 @@ struct Bitset {
         } else {
             data = alloc.template alloc<uint64_t>(get_num_words());
         }
-        reset();
+    }
+
+    template <typename A>
+    void init_zero(A &alloc, size_t capacity) {
+        init(alloc, capacity);
+        fill_zero();
     }
 
     template <typename A>
@@ -50,10 +55,17 @@ struct Bitset {
 
     size_t get_num_words() { return (bitCapacity >> 6) + 1; }
 
-    void reset() {
+    void fill_zero() {
         for (size_t i = 0; i < get_num_words(); i++) {
             data[i] = 0;
         }
+    }
+
+    void fill_one() {
+        for (size_t i = 0; i < get_num_words(); i++) {
+            data[i] = ~((uint64_t)0);
+        }
+        clear_leading_zeros();
     }
 
     void clear_leading_zeros() {
@@ -103,15 +115,7 @@ struct Bitset {
         }
     }
 
-    void and_not(Bitset &other) {
-        size_t cnt = MIN(get_num_words(), other.get_num_words());
-        size_t i = 0;
-        for (; i < cnt; i++) {
-            data[i] &= ~other.data[i];
-        }
-    }
-
-    void and_not(Bitset &a, Bitset &b) {
+    void intersect_not(Bitset &a, Bitset &b) {
         assert(bitCapacity >= a.bitCapacity);
         size_t cnt = MIN(a.get_num_words(), b.get_num_words());
         size_t i = 0;
@@ -236,7 +240,7 @@ struct LList {
         return data[i];
     }
 
-    T &last() {
+    T &back() {
         assert(size > 0);
         return data[size - 1];
     }

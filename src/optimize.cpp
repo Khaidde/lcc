@@ -17,14 +17,14 @@ namespace cfg_opt {
  * - assert that there are no critical edges
  */
 void canonicalize(Function &fn) {
-    mem::ArenaAllocator<512> localAlloc;
+    mem::ArenaAllocator<256> localAlloc;
 
     BasicBlock **stack = mem::alloc<BasicBlock *>(localAlloc, fn.numBlocks - 1);
     BasicBlock **firstRpo = mem::alloc<BasicBlock *>(localAlloc, fn.numBlocks);
     size_t *numPredAdded = mem::alloc<size_t>(localAlloc, fn.numBlocks);
 
     Bitset visited;
-    visited.init(localAlloc, fn.numBlocks);
+    visited.init_zero(localAlloc, fn.numBlocks);
     stack[0] = fn.entry;
     fn.entry->predCnt = 0;
     numPredAdded[fn.entry->idx] = 0;
@@ -265,7 +265,7 @@ void compute_domfrontier(Function &fn) {
 
     fn.domf = mem::c_alloc<Bitset>(fn.numBlocks);
     for (size_t i = 0; i < fn.numBlocks; i++) {
-        fn.domf[i].init(mem::cAlloc, fn.numBlocks);
+        fn.domf[i].init_zero(mem::cAlloc, fn.numBlocks);
     }
     for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
         if ((*bb)->predCnt >= 2) {
@@ -357,46 +357,47 @@ namespace mem_elimination {
 using VariableIdx = size_t;
 
 struct VariableInfo {
-    // TODO: add valuable information here
-    VariableIdx idx;  // TODO: delete this
+    VariableIdx idx;
+    bool isValid;
+    Bitset phiSet;  // Set of blocks containing phi nodes for this variable
 };
 
 void pass(Opt &opt, Function &fn) {
     dominator::compute_domfrontier(fn);
     assert(dominator::is_domfrontier_valid(fn));
 
-    dominator::print_domtree(fn);
-    dominator::print_dominates(fn);
-    dominator::print_domfrontier(fn);
+    mem::ArenaAllocator<1024> localAlloc;
 
-    mem::ArenaAllocator<512> localAlloc;
-
-    Bitset invalidVarIdx;
-    size_t numAllocs = 0;
     LList<VariableInfo> allocInsts;
     LMap<Inst *, VariableIdx> allocInstsMap;
     allocInstsMap.init();
 
+    Inst *lastAllocInst = nullptr;
+
     // Determine local variables that can be optimized
+    // Essentially, if a local variable's address is needed
+    // then it cannot be optimized into registers
     for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
         for (Inst *inst = (*bb)->start; inst; inst = inst->next) {
             switch (inst->kind) {
-                case Inst::Kind::kAlloc:
-                    VariableInfo vInfo;
-                    vInfo.idx = numAllocs++;
-                    allocInsts.add(vInfo);
+                case Inst::Kind::kAlloc: {
+                    if (inst->alloc.kind == AllocInst::Kind::kRetVal) break;
+
+                    allocInsts.add({});
+                    VariableInfo &vInfo = allocInsts.back();
+                    vInfo.idx = allocInsts.size - 1;
+                    vInfo.isValid = true;
+                    vInfo.phiSet.init_zero(localAlloc, fn.numBlocks);
+
                     allocInstsMap.try_put(inst, vInfo.idx);
-                    if (!inst->next || inst->next->kind != Inst::Kind::kAlloc) {
-                        invalidVarIdx.init(localAlloc, numAllocs);
-                    }
+
+                    lastAllocInst = inst;
                     break;
+                }
                 case Inst::Kind::kStore:
-                    if (inst->st.src.kind == Opd::Kind::kReg) {
-                        if (inst->st.src.regVal->kind == Inst::Kind::kAlloc) {
-                            VariableIdx *vidx = allocInstsMap[inst->st.src.regVal];
-                            assert(vidx);
-                            invalidVarIdx.set(*vidx);
-                        }
+                    if (inst->st.src.kind == Opd::Kind::kReg && inst->st.src.regVal->kind == Inst::Kind::kAlloc) {
+                        VariableIdx *vidxp = allocInstsMap[inst->st.src.regVal];
+                        allocInsts[*vidxp].isValid = false;
                     }
                     break;
                 default: break;
@@ -405,62 +406,97 @@ void pass(Opt &opt, Function &fn) {
     }
 
     // No allocations so there is nothing to optimize
-    if (numAllocs == 0) return;
+    if (allocInsts.size == 0) return;
 
-    for (auto bit = invalidVarIdx.begin(); bit != invalidVarIdx.end(); ++bit) {
-        printf("::var idx=%d is invalidated\n", *bit);
-    }
-
-    // Collect all uses and defs of allocated pointers (arguments, local variables, etc.)
     LList<BasicBlock *> blocksWithDefinition;
-    blocksWithDefinition.init(fn.numBlocks);
+    LList<Inst *> *useDefInsts = mem::alloc<LList<Inst *>>(localAlloc, fn.numBlocks);
+
+    Inst **availDef = mem::alloc<Inst *>(localAlloc, allocInsts.size * fn.numBlocks);
+
+    // Eliminate allocations if local variable. Otherwise create single load for arguments.
+    // Alternative is to completely invalidate all arguments from memory elimination
+    // Also collect all uses and defs of allocated pointers (arguments, local variables, etc.).
     Bitset *defSets = mem::alloc<Bitset>(localAlloc, fn.numBlocks);
     for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
-        defSets[(*bb)->idx].init(localAlloc, numAllocs);
+        defSets[(*bb)->idx].init_zero(localAlloc, allocInsts.size);
+        useDefInsts[(*bb)->idx] = {};
+
         for (Inst *inst = (*bb)->start; inst; inst = inst->next) {
             switch (inst->kind) {
-                case Inst::Kind::kStore:
-                    assert(inst->st.addr.kind == Opd::Kind::kReg);
-                    if (VariableIdx *vidx = allocInstsMap[inst->st.addr.regVal]) {
-                        defSets[(*bb)->idx].set(*vidx);
-                        break;
+                case Inst::Kind::kAlloc: {
+                    if (VariableIdx *vidxp = allocInstsMap[inst]) {
+                        VariableInfo &vInfo = allocInsts[*vidxp];
+                        if (vInfo.isValid) {
+                            switch (inst->alloc.kind) {
+                                case AllocInst::kRetVal: unreachable();
+                                case AllocInst::kArg: {
+                                    Inst *ld = create_inst(Inst::Kind::kLoad);
+                                    ld->ld.src.kind = Opd::Kind::kReg;
+                                    ld->ld.src.regVal = inst;
+                                    insert_inst(opt, fn.entry, lastAllocInst, ld, true);
+                                    availDef[vInfo.idx] = ld;
+                                    break;
+                                }
+                                case AllocInst::kLocalVar:
+                                    if (inst == lastAllocInst) lastAllocInst = inst->prev;
+                                    remove_inst(inst);
+                                    break;
+                            }
+                        }
                     }
+                    break;
+                }
+                case Inst::Kind::kLoad: {
+                    assert(inst->ld.src.kind == Opd::Kind::kReg);
+
+                    if (VariableIdx *vidxp = allocInstsMap[inst->ld.src.regVal]) {
+                        VariableInfo &vInfo = allocInsts[*vidxp];
+                        if (vInfo.isValid) {
+                            useDefInsts[(*bb)->idx].add(inst);
+                        }
+                    }
+                    break;
+                }
+                case Inst::Kind::kStore: {
+                    assert(inst->st.addr.kind == Opd::Kind::kReg);
+                    if (VariableIdx *vidxp = allocInstsMap[inst->st.addr.regVal]) {
+                        VariableInfo &vInfo = allocInsts[*vidxp];
+                        if (vInfo.isValid) {
+                            defSets[(*bb)->idx].set(vInfo.idx);
+                            useDefInsts[(*bb)->idx].add(inst);
+                        }
+                    }
+                    break;
+                }
                 default: break;
             }
         }
-        defSets[(*bb)->idx].and_not(invalidVarIdx);
         if (!defSets[(*bb)->idx].all_zero()) {
             blocksWithDefinition.add(*bb);
         }
     }
 
-    Bitset *phiSets = mem::alloc<Bitset>(localAlloc, numAllocs);
-    for (size_t i = 0; i < numAllocs; i++) {
-        phiSets[i].init(localAlloc, fn.numBlocks);
-    }
-
-    Bitset domFUnion, finalPhiSet;
+    // Phi node insertion
+    Bitset domFUnion;
     domFUnion.init(localAlloc, fn.numBlocks);
-    finalPhiSet.init(localAlloc, fn.numBlocks);
-
-    LMap<Inst *, VariableIdx> phiInstVarIdxMap;
-    phiInstVarIdxMap.init();
-
-    LList<BlockIdx> worklist;
-
+    Bitset insertPhiSet;
+    insertPhiSet.init(localAlloc, fn.numBlocks);
+    LMap<Inst *, VariableIdx> phiVariableIdxMap;
+    phiVariableIdxMap.init();
+    BlockIdx *worklist = mem::alloc<BlockIdx>(localAlloc, fn.numBlocks);
     for (size_t i = 0; i < blocksWithDefinition.size; i++) {
         BasicBlock *bb = blocksWithDefinition[i];
 
         // Calculate union of dominance frontiers for current block
-        domFUnion.reset();
-        worklist.size = 0;
-        worklist.add(bb->idx);
-        while (worklist.size) {
-            Bitset &domf = fn.domf[worklist.pop_back()];
+        size_t worklistSize = 0;
+        worklist[worklistSize++] = bb->idx;
+        domFUnion.fill_zero();
+        while (worklistSize) {
+            Bitset &domf = fn.domf[worklist[--worklistSize]];
 
             for (auto bidx = domf.begin(); bidx != domf.end(); ++bidx) {
                 if (domFUnion.set(*bidx)) {
-                    worklist.add(*bidx);
+                    worklist[worklistSize++] = *bidx;
                 }
             }
         }
@@ -470,32 +506,105 @@ void pass(Opt &opt, Function &fn) {
         // For each variable with a definition in this block
         // insert phi nodes where appropriate
         for (auto vidx = defSets[bb->idx].begin(); vidx != defSets[bb->idx].end(); ++vidx) {
-            // Do not add phi node if phi node already exists for vidx
-            finalPhiSet.and_not(domFUnion, phiSets[*vidx]);
+            // Bitset calculation to prevent repeat phi nodes for a given variable in a block
+            Bitset &phiSet = allocInsts[*vidx].phiSet;
+            insertPhiSet.intersect_not(domFUnion, phiSet);
 
-            for (auto bidx = finalPhiSet.begin(); bidx != finalPhiSet.end(); ++bidx) {
-                BasicBlock *curr = fn.rpo[*bidx];
+            for (auto bidx = insertPhiSet.begin(); bidx != insertPhiSet.end(); ++bidx) {
+                BasicBlock *block = fn.rpo[*bidx];
 
                 Inst *phi = create_inst(Inst::Kind::kPhi);
-                phi->phi.joins.init(curr->predCnt);
-                push_front_inst(opt, curr, phi, true);
-                phiInstVarIdxMap.try_put(phi, *vidx);
+                phi->phi.joins.init(block->predCnt);
+                push_front_inst(opt, block, phi, true);
+
+                // Map phi inst to the variable it represents
+                phiVariableIdxMap.try_put(phi, *vidx);
 
                 // Mark block as already having a phi node for the variable
-                phiSets[*vidx].set(*bidx);
+                phiSet.set(*bidx);
+            }
+        }
+    }
+
+    // Variable renaming into SSA
+    for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
+        Inst **currAvailDef = &availDef[(*bb)->idx * allocInsts.size];
+        Inst **domAvailDef = &availDef[fn.dom[(*bb)->idx]->idx * allocInsts.size];
+        for (size_t i = 0; i < allocInsts.size; i++) {
+            if (allocInsts[i].isValid) {
+                currAvailDef[i] = domAvailDef[i];
+            }
+        }
+
+        // Add phi nodes as available definition for renaming
+        for (Inst *phi = (*bb)->start; phi && phi->kind == Inst::Kind::kPhi; phi = phi->next) {
+            VariableIdx vidx = *phiVariableIdxMap[phi];
+            currAvailDef[vidx] = phi;
+        }
+
+        // Variable renaming of loads and stores
+        LList<Inst *> &useDefs = useDefInsts[(*bb)->idx];
+        for (size_t i = 0; i < useDefs.size; i++) {
+            Inst *inst = useDefs[i];
+            switch (inst->kind) {
+                case Inst::Kind::kLoad: {
+                    assert(inst->ld.src.kind == Opd::Kind::kReg);
+
+                    VariableIdx *vidxp = allocInstsMap[inst->ld.src.regVal];
+                    assert(vidxp);
+
+                    // Avoid renaming load into a recursive assign: "v34 = v34"
+                    if (currAvailDef[*vidxp] != inst) {
+                        inst->kind = Inst::Kind::kAssign;
+                        inst->assign.src.regVal = currAvailDef[*vidxp];
+                    }
+                    break;
+                }
+                case Inst::Kind::kStore: {
+                    assert(inst->kind == Inst::Kind::kStore);
+                    assert(inst->st.addr.kind == Opd::Kind::kReg);
+
+                    VariableIdx *vidxp = allocInstsMap[inst->st.addr.regVal];
+                    assert(vidxp);
+
+                    inst->kind = Inst::Kind::kAssign;
+                    if (inst->st.src.kind == Opd::Kind::kReg && inst->st.src.regVal->kind == Inst::Kind::kAssign) {
+                        Inst *prev = inst->st.src.regVal;
+                        inst->assign.src = prev->assign.src;
+                        // TODO: make sure this is correct
+                        assert(prev == inst->prev);
+                        remove_inst(prev);
+                    } else {
+                        inst->assign.src = inst->st.src;
+                    }
+                    inst->dst = opt.nextReg++;
+
+                    currAvailDef[*vidxp] = inst;
+                    break;
+                }
+                default: unreachable();
+            }
+        }
+
+        // Add join values to phi nodes in successor blocks
+        for (auto succ = succ_begin(*bb); succ != succ_end(*bb); ++succ) {
+            for (Inst *phi = (*succ)->start; phi && phi->kind == Inst::Kind::kPhi; phi = phi->next) {
+                VariableIdx vidx = *phiVariableIdxMap[phi];
+                phi->phi.joins.add({currAvailDef[vidx], *bb});
             }
         }
     }
 
     allocInsts.destroy();
     allocInstsMap.destroy();
-    useDefInsts.destroy();
 
     blocksWithDefinition.destroy();
+    for (size_t i = 0; i < fn.numBlocks; i++) {
+        useDefInsts[i].destroy();
+    }
 
-    worklist.destroy();
-    phiInstVarIdxMap.destroy();
-}
+    phiVariableIdxMap.destroy();
+}  // namespace mem_elimination
 
 }  // namespace mem_elimination
 

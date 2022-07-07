@@ -376,6 +376,7 @@ Inst *translate_call(Context &tc, Node *exp, bool genNewReg) {
     for (size_t i = 0; i < exp->call.args.size; i++) {
         translate_expr(tc, call->call.args[i], exp->call.args[i]);
     }
+    call->call.numArgs = exp->call.args.size;
     push_back_inst(tc.opt, tc.bb, call, genNewReg);
     return call;
 }

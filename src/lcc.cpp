@@ -272,7 +272,7 @@ ErrCode resolve_packages(CompilationContext &cmp, const char *mainFile) {
     LList<LString> filenames{};
     while (importStack.size) {
         // Get next import to resolve
-        ImportContext &importCtx = importStack.last();
+        ImportContext &importCtx = importStack.back();
         importStack.size--;
 
         if (!cmp.packageMap[importCtx.importName]) {

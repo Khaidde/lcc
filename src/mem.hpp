@@ -14,7 +14,7 @@
 #include "print.hpp"
 #include "util.hpp"
 
-#define DBG_MEM 0
+#define DBG_MEM 1
 
 #else
 #define DBG_MEM 0
@@ -76,9 +76,7 @@ struct ArenaAllocator {
 
     template <typename T>
     T *alloc(size_t count) {
-        T *ptr = (T *)internal_alloc(sizeof(T) * count);
-        *ptr = {};
-        return ptr;
+        return (T *)internal_alloc(sizeof(T) * count);
     }
 
     template <typename T>
@@ -215,9 +213,7 @@ struct CAllocator {
 
     template <typename T>
     T *alloc(size_t count) {
-        T *ptr = (T *)::malloc(sizeof(T) * count);
-        *ptr = {};
-        return ptr;
+        return (T *)::malloc(sizeof(T) * count);
     }
 
     template <typename T>
@@ -237,7 +233,7 @@ static inline T *alloc(A &alloc) {
 
 template <typename T, typename A>
 static inline T *alloc(A &alloc, size_t count) {
-    return alloc.template alloc<T>(sizeof(T) * count);
+    return alloc.template alloc<T>(count);
 }
 
 template <typename T>
