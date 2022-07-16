@@ -4,3 +4,4 @@ string : type #extern
 
 unused : (u16) #extern
 unusedp : (*u16) #extern
+unusedpp : (**u16) #extern

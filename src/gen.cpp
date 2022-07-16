@@ -21,11 +21,29 @@ size_t succ_count(BasicBlock *block) {
     }
 }
 
-ListIterator<BasicBlock *> succ_begin(BasicBlock *block) { return {&block->term.succ[0]}; }
+ListIterator<BasicBlock *> succ_begin(BasicBlock *block) { return {&block->term.succ}; }
 
-ListIterator<BasicBlock *> succ_end(BasicBlock *block) { return {&block->term.succ[succ_count(block)]}; }
+ListIterator<BasicBlock *> succ_end(BasicBlock *block) { return {&block->term.succ + succ_count(block)}; }
 
-constexpr size_t kAnnotateSpace = 10;
+ListIterator<Opd> opd_begin(Inst *inst) {
+    switch (inst->kind) {
+        case Inst::Kind::kPhi: return {&inst->phi.joins[0]};
+        case Inst::Kind::kCall: return {&inst->call.args[0]};
+        default: return {&inst->opd};
+    }
+}
+
+ListIterator<Opd> opd_end(Inst *inst) {
+    switch (inst->kind) {
+        case Inst::Kind::kAlloc: return {&inst->opd};
+        case Inst::Kind::kPhi: return {&inst->phi.joins[inst->phi.numJoins]};
+        case Inst::Kind::kMov: return {&inst->opd + 1};
+        case Inst::Kind::kBin: return {&inst->opd + 2};
+        case Inst::Kind::kCall: return {&inst->call.args[inst->call.numArgs]};
+        case Inst::Kind::kLoad: return {&inst->opd + 1};
+        case Inst::Kind::kStore: return {&inst->opd + 2};
+    }
+}
 
 void print_reg(Inst *def) {
     switch (def->type) {
@@ -33,6 +51,7 @@ void print_reg(Inst *def) {
             printf("v");
             break;
         case Inst::Type::kU16:
+        case Inst::Type::kU32:
             set_color(kColorYellow);
             printf("u");
             break;
@@ -47,20 +66,27 @@ void print_reg(Inst *def) {
 
 void print_opd(Opd &opd) {
     switch (opd.kind) {
-        case Opd::Kind::kImm:
+        case Opd::Kind::kImm16:
             set_color(kColorCyan);
-            printf("%d", opd.intval);
+            printf("%d[u16]", opd.imm16);
+            reset_color();
+            break;
+        case Opd::Kind::kImm32:
+            set_color(kColorCyan);
+            printf("%d[u32]", opd.imm32);
             reset_color();
             break;
         case Opd::Kind::kReg:
-            if (!opd.regVal || opd.regVal->dst == 0) {
+            if (!opd.reg || opd.reg->dst == 0) {
                 printf("v_");
             } else {
-                print_reg(opd.regVal);
+                print_reg(opd.reg);
             }
             break;
     }
 }
+
+constexpr size_t kAnnotateSpace = 10;
 
 void print_inst(Inst *inst) {
     const char *annotation =
@@ -80,9 +106,7 @@ void print_inst(Inst *inst) {
     }
     switch (inst->kind) {
         case Inst::Kind::kAlloc:
-            printf("alloc(");
-            printf("%d)", inst->alloc.allocSize);
-            printf(" // ");
+            printf("alloc(%d) // ", inst->alloc.allocSize);
             switch (inst->alloc.kind) {
                 case AllocInst::Kind::kRetVal: printf("return value"); break;
                 case AllocInst::Kind::kArg: printf("<arg %d> ", inst->alloc.argNo);
@@ -100,25 +124,25 @@ void print_inst(Inst *inst) {
             break;
         case Inst::Kind::kPhi:
             printf("phi(");
-            for (size_t k = 0; k < inst->phi.joins.size; k++) {
-                PhiInst::Arg &phiArg = inst->phi.joins[k];
-                printf("v%-2d[B%-2d]", phiArg.ref->dst, phiArg.bb->idx);
-                if (k < inst->phi.joins.size - 1) {
+            for (size_t k = 0; k < inst->phi.numJoins; k++) {
+                BasicBlock *bb = inst->phi.incomingBBs[k];
+                print_opd(inst->phi.joins[k]);
+                printf("[B%-2d]", bb->idx);
+                if (k < inst->phi.numJoins - 1) {
                     printf(", ");
                 }
             }
             printf(")\n");
 
             break;
-        case Inst::Kind::kAssign:
-            print_opd(inst->assign.src);
+        case Inst::Kind::kMov:
+            print_opd(inst->mov.src);
             printf("\n");
             break;
         case Inst::Kind::kBin:
             const char *opstr;
             switch (inst->bin.op) {
                 case TokenType::kAdd: opstr = "add"; break;
-                case TokenType::kSubNeg: opstr = "sub"; break;
                 default: opstr = "?";
             }
             printf("%s(", opstr);
@@ -210,8 +234,18 @@ void start_pass(Opt &opt, const char *passName) {
 #endif
 }
 
+void annotate_inst(Opt &opt, Inst *inst) {
+#if DBG_OPT
+    inst->annotation = opt.currentPassName;
+#else
+    (void)opt;
+    (void)passName;
+#endif
+}
+
 Inst *create_inst(Inst::Kind kind) {
     Inst *inst = mem::p_alloc<Inst>();
+    inst->type = Inst::Type::kUnk;
     inst->kind = kind;
 #if DBG_OPT
     inst->annotation = nullptr;
@@ -235,6 +269,7 @@ void push_front_inst(Opt &opt, BasicBlock *block, Inst *inst, bool genNewReg) {
     if (block->end) {
         block->start->prev = inst;
     } else {
+        assert(!block->start);
         block->end = inst;
     }
     block->start = inst;
@@ -255,6 +290,7 @@ void push_back_inst(Opt &opt, BasicBlock *block, Inst *inst, bool genNewReg) {
     if (block->start) {
         block->end->next = inst;
     } else {
+        assert(!block->end);
         block->start = inst;
     }
     block->end = inst;
@@ -298,18 +334,22 @@ void insert_inst(Opt &opt, BasicBlock *block, Inst *afterThis, Inst *inst, bool 
 void remove_inst(Inst *inst) {
     switch (inst->kind) {
         case Inst::Kind::kCall: mem::c_free(inst->call.args); break;
-        case Inst::Kind::kPhi: mem::c_free(inst->phi.joins.data); break;
+        case Inst::Kind::kPhi:
+            mem::c_free(inst->phi.joins);
+            mem::c_free(inst->phi.incomingBBs);
+            break;
         default: break;
     }
+    assert(inst->block);
     if (inst->prev) {
         inst->prev->next = inst->next;
-    } else if (inst->block) {
+    } else {
         inst->block->start = inst->next;
     }
 
     if (inst->next) {
         inst->next->prev = inst->prev;
-    } else if (inst->block) {
+    } else {
         inst->block->end = inst->prev;
     }
     mem::p_free(inst);
@@ -341,6 +381,7 @@ BasicBlock *create_empty_block() {
 #if DBG_OPT
     block->term.annotation = "";
 #endif
+    block->unreachable = false;
     return block;
 }
 
@@ -358,11 +399,19 @@ void split_edge(Context &tc, BasicBlock *&predTermTarget, BasicBlock *succ) {
     predTermTarget = splitEdgeBlock;
 }
 
-Inst::Type get_opd_type(Opd &opd) {
-    switch (opd.kind) {
-        case Opd::Kind::kImm: return Inst::Type::kU16;
-        case Opd::Kind::kReg: assert(opd.regVal); return opd.regVal->type;
+Inst::Type get_inst_type(Type *type) {
+    assert(type && type != builtin_type::none);
+
+    if (type->kind == TypeKind::kPtr) {
+        return Inst::Type::kPtr;
+    } else {
+        assert(type->kind == TypeKind::kNamed);
+        if (type->name.ref == builtin_type::u16->name.ref) {
+            return Inst::Type::kU16;
+        }
     }
+    assert(!"TODO: detect more types for return of call");
+    unreachable();
 }
 
 void translate_expr(Context &tc, Opd &dst, Node *exp);
@@ -371,6 +420,12 @@ Inst *translate_call(Context &tc, Node *exp, bool genNewReg) {
     Inst *call = create_inst(Inst::Kind::kCall);
     assert(exp->call.callee->kind == NodeKind::kName);
     call->call.fn = tc.opt.fnNameMap[exp->call.callee->name.ident];
+
+    if (genNewReg) {
+        Type *callDeclType = exp->call.callee->name.ref->decl.resolvedTy;
+        assert(callDeclType->kind == TypeKind::kFuncTy);
+        call->type = get_inst_type(callDeclType->funcTy.retTy);
+    }
 
     call->call.args = mem::c_alloc<Opd>(exp->call.args.size);
     for (size_t i = 0; i < exp->call.args.size; i++) {
@@ -381,21 +436,12 @@ Inst *translate_call(Context &tc, Node *exp, bool genNewReg) {
     return call;
 }
 
-Inst *translate_load(Context &tc, Node *nameRef) {
-    Inst *ld = create_inst(Inst::Kind::kLoad);
-    ld->type = Inst::Type::kUnk;
-    ld->ld.src.kind = Opd::Kind::kReg;
-    ld->ld.src.regVal = *tc.declAllocMap[nameRef];
-    push_back_inst(tc.opt, tc.bb, ld, true);
-    return ld;
-}
-
 // Returns instruction if generated else nullptr
 void translate_expr(Context &tc, Opd &dst, Node *exp) {
     switch (exp->kind) {
         case NodeKind::kIntLit:
-            dst.kind = Opd::Kind::kImm;
-            dst.intval = exp->intLit.intVal;
+            dst.kind = Opd::Kind::kImm16;
+            dst.imm16 = exp->intLit.intVal;
             mem::p_free(exp);
             break;
         case NodeKind::kName: {
@@ -403,9 +449,13 @@ void translate_expr(Context &tc, Opd &dst, Node *exp) {
                 todo("TODO: Use of global variable '%s'\n", lstr_raw_str(exp->name.ident));
                 assert(false);
             }
-            Inst *ld = translate_load(tc, exp->name.ref);
+            Inst *ld = create_inst(Inst::Kind::kLoad);
+            ld->type = get_inst_type(exp->name.ref->decl.resolvedTy);
+            ld->ld.src.kind = Opd::Kind::kReg;
+            ld->ld.src.reg = *tc.declAllocMap[exp->name.ref];
+            push_back_inst(tc.opt, tc.bb, ld, true);
             dst.kind = Opd::Kind::kReg;
-            dst.regVal = ld;
+            dst.reg = ld;
             mem::p_free(exp);
             break;
         }
@@ -414,17 +464,17 @@ void translate_expr(Context &tc, Opd &dst, Node *exp) {
                 case TokenType::kPtr:
                     assert(exp->prefix.inner->kind == NodeKind::kName);
                     dst.kind = Opd::Kind::kReg;
-                    dst.regVal = *tc.declAllocMap[exp->prefix.inner->name.ref];
+                    dst.reg = *tc.declAllocMap[exp->prefix.inner->name.ref];
                     break;
                 case TokenType::kDeref: {
                     Inst *derefLd = create_inst(Inst::Kind::kLoad);
-                    derefLd->type = Inst::Type::kUnk;
+                    derefLd->type = get_inst_type(exp->prefix.inner->name.ref->decl.resolvedTy->ptr.inner);
                     translate_expr(tc, derefLd->ld.src, exp->prefix.inner);
 
                     push_back_inst(tc.opt, tc.bb, derefLd, true);
 
                     dst.kind = Opd::Kind::kReg;
-                    dst.regVal = derefLd;
+                    dst.reg = derefLd;
                     mem::p_free(exp);
                     break;
                 }
@@ -438,13 +488,7 @@ void translate_expr(Context &tc, Opd &dst, Node *exp) {
             translate_expr(tc, bin->bin.left, exp->infix.left);
             translate_expr(tc, bin->bin.right, exp->infix.right);
             dst.kind = Opd::Kind::kReg;
-            dst.regVal = bin;
-
-            if (get_opd_type(bin->bin.left) == Inst::Type::kU16 && get_opd_type(bin->bin.right) == Inst::Type::kU16) {
-                bin->type = Inst::Type::kU16;
-            } else {
-                bin->type = Inst::Type::kUnk;
-            }
+            dst.reg = bin;
             push_back_inst(tc.opt, tc.bb, bin, true);
             mem::p_free(exp);
             break;
@@ -452,7 +496,7 @@ void translate_expr(Context &tc, Opd &dst, Node *exp) {
         case NodeKind::kCall: {
             Inst *call = translate_call(tc, exp, true);
             dst.kind = Opd::Kind::kReg;
-            dst.regVal = call;
+            dst.reg = call;
             break;
         }
         default: assert(!"TODO: no translation implemented for expression kind"); unreachable();
@@ -469,7 +513,7 @@ void translate_decl(Context &tc, Node *decl) {
                 Inst *varAlloc = create_inst(Inst::Kind::kAlloc);
                 if (Inst **allocPtr = tc.declAllocMap.try_put(decl->decl.lval->name.ref, varAlloc)) {
                     mem::p_free(varAlloc);
-                    st->st.addr.regVal = *allocPtr;
+                    st->st.addr.reg = *allocPtr;
                 } else {
                     varAlloc->type = Inst::Type::kPtr;
 #if DBG_OPT
@@ -477,7 +521,7 @@ void translate_decl(Context &tc, Node *decl) {
 #endif
                     varAlloc->alloc.kind = AllocInst::Kind::kLocalVar;
                     varAlloc->alloc.allocSize = get_byte_size(decl->decl.resolvedTy);
-                    st->st.addr.regVal = varAlloc;
+                    st->st.addr.reg = varAlloc;
 
                     insert_inst(tc.opt, tc.fn.entry, tc.lastAllocInst, varAlloc, true);
                     tc.lastAllocInst = varAlloc;
@@ -516,8 +560,8 @@ BasicBlock *translate_if(Context &tc, BasicBlock *exit, Node *ifstmt) {
         mem::p_free(ifstmt);
 
         bool isAlwaysFalse = false;
-        if (entry->term.cond.predicate.kind == Opd::Kind::kImm) {
-            if (entry->term.cond.predicate.intval == 0) {
+        if (entry->term.cond.predicate.kind == Opd::Kind::kImm16) {
+            if (entry->term.cond.predicate.imm16 == 0) {
                 isAlwaysFalse = true;
             } else {
                 // "Then" of ifstmt always executes so treat this call
@@ -564,8 +608,8 @@ BasicBlock *translate_while(Context &tc, BasicBlock *exit, Node *whilestmt) {
     translate_expr(tc, entry->term.cond.predicate, whilestmt->whilestmt.cond);
 
     // Early CFG Optimization where while statement of condition 0/false is culled
-    if (entry->term.cond.predicate.kind == Opd::Kind::kImm) {
-        if (entry->term.cond.predicate.intval == 0) {
+    if (entry->term.cond.predicate.kind == Opd::Kind::kImm16) {
+        if (entry->term.cond.predicate.imm16 == 0) {
             entry->term.kind = Terminator::Kind::kGoto;
             entry->term.tgoto.target = exit;
             return exit;
@@ -637,7 +681,7 @@ BasicBlock *translate_block(Context &tc, BasicBlock *exit, Node *block) {
                     Inst *st = create_inst(Inst::Kind::kStore);
                     assert(tc.returnValuePtrInst);
                     st->st.addr.kind = Opd::Kind::kReg;
-                    st->st.addr.regVal = tc.returnValuePtrInst;
+                    st->st.addr.reg = tc.returnValuePtrInst;
                     translate_expr(tc, st->st.src, stmt->ret.value);
                     push_back_inst(tc.opt, tc.bb, st, false);
                 }

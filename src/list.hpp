@@ -11,7 +11,7 @@ namespace lcc {
 
 template <typename T>
 struct ListIterator {
-    T operator*() const { return *curr; }
+    T &operator*() const { return *curr; }
 
     ListIterator &operator++() {
         ++curr;

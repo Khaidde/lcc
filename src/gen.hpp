@@ -19,12 +19,14 @@ struct Inst;
 
 struct Opd {
     enum Kind {
+        kImm16,
+        kImm32,
         kReg,
-        kImm,
     } kind;
     union {
-        Inst *regVal;
-        uint16_t intval;
+        uint16_t imm16;
+        uint32_t imm32;
+        Inst *reg;
     };
 };
 
@@ -42,14 +44,12 @@ struct AllocInst {
 };
 
 struct PhiInst {
-    struct Arg {
-        Inst *ref;
-        struct BasicBlock *bb;
-    };
-    LList<Arg> joins;
+    Opd *joins;
+    struct BasicBlock **incomingBBs;
+    size_t numJoins;
 };
 
-struct AssignInst {
+struct MovInst {
     Opd src;
 };
 
@@ -78,7 +78,7 @@ struct Inst {
     enum Kind {
         kAlloc,
         kPhi,
-        kAssign,
+        kMov,
         kBin,
         kCall,
         kLoad,
@@ -95,13 +95,15 @@ struct Inst {
     enum Type {
         kUnk,
         kU16,
+        kU32,
         kPtr,
     } type;
     VReg dst;
     union {
+        Opd opd;
         AllocInst alloc;
         PhiInst phi;
-        AssignInst assign;
+        MovInst mov;
         BinInst bin;
         CallInst call;
         LoadInst ld;
@@ -130,9 +132,9 @@ struct Terminator {
     const char *annotation;
 #endif
     union {
+        BasicBlock *succ;
         GotoTerminator tgoto;
         CondTerminator cond;
-        BasicBlock *succ[2];
     };
 };
 
@@ -145,6 +147,8 @@ struct BasicBlock {
     Inst *start;
     Inst *end;
     Terminator term;
+
+    bool unreachable;
 };
 
 struct Function {
@@ -181,11 +185,15 @@ size_t succ_count(BasicBlock *block);
 ListIterator<BasicBlock *> succ_begin(BasicBlock *block);
 ListIterator<BasicBlock *> succ_end(BasicBlock *block);
 
+ListIterator<Opd> opd_begin(Inst *inst);
+ListIterator<Opd> opd_end(Inst *inst);
+
 void print_opd(Opd &opd);
 void print_inst(Inst *inst);
 void print_function(Function &fn);
 
 void start_pass(Opt &opt, const char *passName);
+void annotate_inst(Opt &opt, Inst *inst);
 
 Inst *create_inst(Inst::Kind kind);
 void push_front_inst(Opt &opt, BasicBlock *block, Inst *inst, bool genNewReg);

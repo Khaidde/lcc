@@ -150,10 +150,15 @@ simple := :(a: u16) -> u16 {
     // e := d + d
     // e := *b // *b + *b
     e := @d
-    @d = e + 1
+    @d = 1 + e
     f := @c
+    k := *c
     unused(f)
+    unusedpp(k)
     while 1 {
+        a1 := b + 1
+        a2 := 2 + a1
+        unused(a2)
         b = f
         f = 2
         while b {

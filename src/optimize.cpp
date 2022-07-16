@@ -6,6 +6,137 @@
 
 namespace lcc {
 
+namespace opt {
+
+bool is_commutative(TokenType infixOp) {
+    switch (infixOp) {
+        case TokenType::kAdd: return true;
+        default: return false;
+    }
+}
+
+bool is_associative(TokenType infixOp) {
+    switch (infixOp) {
+        case TokenType::kAdd: return true;
+        default: return false;
+    }
+}
+
+uint16_t compute_u16_binop(TokenType op, uint16_t left, uint16_t right) {
+    switch (op) {
+        case TokenType::kAdd: return left + right;
+        default: assert(!"TODO: unimplemented constant folding for binary operation");
+    }
+    unreachable();
+}
+
+// Performs a single depth, copy/constant propagation replacement
+// on the operand. "inst" - instruction containing the operand
+void propagate_opd(Opt &opt, Inst *inst, Opd &opd) {
+    if (opd.kind == Opd::Kind::kReg) {
+        if (opd.reg->kind == Inst::Kind::kMov) {
+            opd = opd.reg->mov.src;
+            annotate_inst(opt, inst);
+        }
+    }
+}
+
+bool is_imm_opd(Opd &opd) { return opd.kind == Opd::Kind::kImm16 || opd.kind == Opd::Kind::kImm32; }
+
+void canon_inst(Opt &opt, Inst *inst) {
+    for (auto opd = opd_begin(inst); opd != opd_end(inst); ++opd) {
+        propagate_opd(opt, inst, *opd);
+    }
+    switch (inst->kind) {
+        case Inst::Kind::kPhi: {
+            assert(inst->phi.numJoins);
+            size_t i = 0;
+            for (; i < inst->phi.numJoins; i++) {
+                Opd &phiOpd = inst->phi.joins[i];
+                switch (phiOpd.kind) {
+                    case Opd::Kind::kImm16: inst->type = Inst::Type::kU16; break;
+                    case Opd::Kind::kImm32: inst->type = Inst::Type::kU32; break;
+                    case Opd::Kind::kReg: inst->type = phiOpd.reg->type; break;
+                }
+                if (inst->type != Inst::Type::kUnk) {
+                    break;
+                }
+            }
+            assert(i != inst->phi.numJoins);
+            break;
+        }
+        case Inst::Kind::kBin: {
+            bool lHasImm = is_imm_opd(inst->bin.left);
+            bool rHasImm = is_imm_opd(inst->bin.right);
+            if (lHasImm && rHasImm) {
+                // Const time evaluation of the binary operator
+                inst->kind = Inst::Kind::kMov;
+
+                inst->mov.src.kind = inst->bin.left.kind;
+                switch (inst->mov.src.kind) {
+                    case Opd::Kind::kImm16: {
+                        uint16_t res = compute_u16_binop(inst->bin.op, inst->bin.left.imm16, inst->bin.right.imm16);
+                        inst->mov.src.imm16 = res;
+                        inst->type = Inst::Type::kU16;
+                        break;
+                    }
+                    case Opd::Kind::kImm32: assert(!"TODO: implement comptime execution of 32-bit binary operations");
+                    default: unreachable();
+                }
+                annotate_inst(opt, inst);
+            } else {
+                if (lHasImm && is_commutative(inst->bin.op)) {
+                    // Ensure immediate is always on the right operand
+                    assert(!rHasImm);
+
+                    if (inst->bin.left.kind == Opd::Kind::kImm32) {
+                        assert(!"TODO: implement canon ordering for u32");
+                    }
+                    uint16_t imm16 = inst->bin.left.imm16;
+                    inst->bin.left = inst->bin.right;
+                    inst->bin.right.kind = Opd::Kind::kImm16;
+                    inst->bin.right.imm16 = imm16;
+                    annotate_inst(opt, inst);
+                }
+                if (is_associative(inst->bin.op) && inst->bin.right.kind == Opd::Kind::kImm16) {
+                    assert(inst->bin.left.kind == Opd::Kind::kReg);
+                    Inst *inner = inst->bin.left.reg;
+                    if (inner->kind == Inst::Kind::kBin && inner->bin.op == inst->bin.op) {
+                        if (is_imm_opd(inner->bin.right)) {
+                            assert(inner->bin.left.kind == Opd::Kind::kReg);
+
+                            // Reassociate binary operations
+                            if (inner->bin.right.kind == Opd::Kind::kImm32) {
+                                assert(!"TODO: implement reassociation of binary operations for u32");
+                            }
+                            uint16_t outerImm = inst->bin.right.imm16;
+                            uint16_t innerImm = inner->bin.right.imm16;
+                            inst->bin.right.imm16 = compute_u16_binop(inst->bin.op, outerImm, innerImm);
+                            inst->bin.left.reg = inner->bin.left.reg;
+                            annotate_inst(opt, inst);
+                        }
+                    }
+                }
+
+                assert(inst->bin.left.kind == Opd::Kind::kReg);
+                inst->type = inst->bin.left.reg->type;
+            }
+            break;
+        }
+        default: break;
+    }
+}
+
+void global_canon(Opt &opt, Function &fn) {
+    for (auto bb = rpo_begin(fn), end = rpo_end(fn); bb != end; ++bb) {
+        for (Inst *inst = (*bb)->start; inst; inst = inst->next) {
+            canon_inst(opt, inst);
+        }
+    }
+}
+
+}  // namespace opt
+
 namespace cfg_opt {
 
 /*
@@ -19,15 +150,17 @@ namespace cfg_opt {
 void canonicalize(Function &fn) {
     mem::ArenaAllocator<256> localAlloc;
 
+    assert(!fn.rpo);
+    fn.rpo = mem::alloc<BasicBlock *>(localAlloc, fn.numBlocks);
+
     BasicBlock **stack = mem::alloc<BasicBlock *>(localAlloc, fn.numBlocks - 1);
-    BasicBlock **firstRpo = mem::alloc<BasicBlock *>(localAlloc, fn.numBlocks);
-    size_t *numPredAdded = mem::alloc<size_t>(localAlloc, fn.numBlocks);
+    size_t *numPreds = mem::alloc<size_t>(localAlloc, fn.numBlocks);
 
     Bitset visited;
     visited.init_zero(localAlloc, fn.numBlocks);
     stack[0] = fn.entry;
     fn.entry->predCnt = 0;
-    numPredAdded[fn.entry->idx] = 0;
+    numPreds[fn.entry->idx] = 0;
 
     // DFS to initialize first rpo ordering without merging optimizations
     // Also keep track of the number of predecessors and initialize pred data structure
@@ -36,27 +169,26 @@ void canonicalize(Function &fn) {
         BasicBlock *curr = stack[--stackSize];
         curr->pred = nullptr;
 
-        firstRpo[curr->idx] = curr;
+        fn.rpo[curr->idx] = curr;
         for (auto succ = succ_begin(curr); succ != succ_end(curr); ++succ) {
             if (!visited[(*succ)->idx]) {
                 (*succ)->predCnt = 0;
-                numPredAdded[(*succ)->idx] = 0;
+                numPreds[(*succ)->idx] = 0;
 
                 stack[stackSize++] = *succ;
                 visited.set((*succ)->idx);
             }
-            (*succ)->predCnt++;
+            numPreds[(*succ)->idx]++;
         }
     }
 
     // Initialize predecessor lists
-    fn.rpo = firstRpo;
     for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
         for (auto succ = succ_begin(*bb); succ != succ_end(*bb); ++succ) {
             if (!(*succ)->pred) {
-                (*succ)->pred = mem::c_alloc<BasicBlock *>((*succ)->predCnt);
+                (*succ)->pred = mem::c_alloc<BasicBlock *>(numPreds[(*succ)->idx]);
             }
-            (*succ)->pred[numPredAdded[(*succ)->idx]++] = *bb;
+            (*succ)->pred[(*succ)->predCnt++] = *bb;
         }
     }
 
@@ -65,7 +197,7 @@ void canonicalize(Function &fn) {
     for (size_t i = 0; i < fn.numBlocks; i++) {
         // Traverse from exit to entry to ensure merges
         // are propagated backwards correctly
-        BasicBlock *curr = firstRpo[fn.numBlocks - i - 1];
+        BasicBlock *curr = fn.rpo[fn.numBlocks - i - 1];
         if (succ_count(curr) == 1) {
             BasicBlock *succ = *succ_begin(curr);
             if (succ->predCnt == 1) {
@@ -77,41 +209,47 @@ void canonicalize(Function &fn) {
                         }
                     }
                 }
-                if (curr->end) {
-                    curr->end->next = succ->start;
-                } else {
-                    curr->start = succ->start;
+                Inst *inst = succ->start;
+                while (inst) {
+                    inst->block = curr;
+                    inst = inst->next;
                 }
-                curr->end = succ->end;
-                if (succ->start) {
-                    succ->start->prev = curr->end;
-                }
+                if (succ->start) succ->start->prev = curr->end;
+                if (curr->end) curr->end->next = succ->start;
+                if (succ->end) curr->end = succ->end;
+                if (!curr->start) curr->start = succ->start;
+
+                succ->unreachable = true;
+
                 curr->term = succ->term;
                 if (succ == fn.exit) fn.exit = curr;
                 mem::c_free(succ->pred);
                 succ->predCnt = 0;
                 numMerged++;
+                assert(succ->end && succ->start || (!succ->end && !succ->start));
+                assert(curr->end && curr->start || (!curr->end && !curr->start));
             }
         }
     }
 
-    // Initialize rpo
-    fn.rpo = mem::c_alloc<BasicBlock *>(fn.numBlocks - numMerged);
-    size_t rpoIdx = 0;
-    for (size_t i = 0; i < fn.numBlocks; i++) {
-        if (firstRpo[i] == fn.entry || firstRpo[i]->predCnt) {
-            fn.rpo[rpoIdx] = firstRpo[i];
-            fn.rpo[rpoIdx]->idx = rpoIdx;
-            rpoIdx++;
-        } else {
-            mem::p_free(firstRpo[i]);
-        }
-    }
-    fn.numBlocks -= numMerged;
-
 #if DBG
     printf("Merged %d edge(s) on first pass:\n", numMerged);
 #endif
+
+    // Initialize rpo
+    BasicBlock **oldRpo = fn.rpo;
+    fn.rpo = mem::c_alloc<BasicBlock *>(fn.numBlocks - numMerged);
+    size_t rpoIdx = 0;
+    for (size_t i = 0; i < fn.numBlocks; i++) {
+        if (oldRpo[i]->unreachable) {
+            mem::p_free(oldRpo[i]);
+        } else {
+            fn.rpo[rpoIdx] = oldRpo[i];
+            fn.rpo[rpoIdx]->idx = rpoIdx;
+            rpoIdx++;
+        }
+    }
+    fn.numBlocks -= numMerged;
 
     // Ensure critical edge doesn't exist
     for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
@@ -372,8 +510,12 @@ void pass(Opt &opt, Function &fn) {
     LMap<Inst *, VariableIdx> allocInstsMap;
     allocInstsMap.init();
 
+    Bitset *defSets = mem::alloc<Bitset>(localAlloc, fn.numBlocks);
+
     Inst *lastAllocInst = nullptr;
 
+    // TODO: replace with better alias analysis later on
+    //
     // Determine local variables that can be optimized
     // Essentially, if a local variable's address is needed
     // then it cannot be optimized into registers
@@ -395,8 +537,8 @@ void pass(Opt &opt, Function &fn) {
                     break;
                 }
                 case Inst::Kind::kStore:
-                    if (inst->st.src.kind == Opd::Kind::kReg && inst->st.src.regVal->kind == Inst::Kind::kAlloc) {
-                        VariableIdx *vidxp = allocInstsMap[inst->st.src.regVal];
+                    if (inst->st.src.kind == Opd::Kind::kReg && inst->st.src.reg->kind == Inst::Kind::kAlloc) {
+                        VariableIdx *vidxp = allocInstsMap[inst->st.src.reg];
                         allocInsts[*vidxp].isValid = false;
                     }
                     break;
@@ -416,12 +558,13 @@ void pass(Opt &opt, Function &fn) {
     // Eliminate allocations if local variable. Otherwise create single load for arguments.
     // Alternative is to completely invalidate all arguments from memory elimination
     // Also collect all uses and defs of allocated pointers (arguments, local variables, etc.).
-    Bitset *defSets = mem::alloc<Bitset>(localAlloc, fn.numBlocks);
     for (auto bb = rpo_begin(fn); bb != rpo_end(fn); ++bb) {
         defSets[(*bb)->idx].init_zero(localAlloc, allocInsts.size);
         useDefInsts[(*bb)->idx] = {};
 
-        for (Inst *inst = (*bb)->start; inst; inst = inst->next) {
+        Inst *inst = (*bb)->start;
+        while (inst) {
+            Inst *nextInst = inst->next;
             switch (inst->kind) {
                 case Inst::Kind::kAlloc: {
                     if (VariableIdx *vidxp = allocInstsMap[inst]) {
@@ -432,34 +575,35 @@ void pass(Opt &opt, Function &fn) {
                                 case AllocInst::kArg: {
                                     Inst *ld = create_inst(Inst::Kind::kLoad);
                                     ld->ld.src.kind = Opd::Kind::kReg;
-                                    ld->ld.src.regVal = inst;
+                                    ld->ld.src.reg = inst;
                                     insert_inst(opt, fn.entry, lastAllocInst, ld, true);
                                     availDef[vInfo.idx] = ld;
                                     break;
                                 }
                                 case AllocInst::kLocalVar:
+                                    // Removed last localVarAlloc so update lastAllocInst to
+                                    // be the instruction directly before this local var allocation
                                     if (inst == lastAllocInst) lastAllocInst = inst->prev;
                                     remove_inst(inst);
+                                    availDef[vInfo.idx] = nullptr;
                                     break;
                             }
                         }
                     }
+                    inst = inst->next;
                     break;
                 }
                 case Inst::Kind::kLoad: {
                     assert(inst->ld.src.kind == Opd::Kind::kReg);
-
-                    if (VariableIdx *vidxp = allocInstsMap[inst->ld.src.regVal]) {
+                    if (VariableIdx *vidxp = allocInstsMap[inst->ld.src.reg]) {
                         VariableInfo &vInfo = allocInsts[*vidxp];
-                        if (vInfo.isValid) {
-                            useDefInsts[(*bb)->idx].add(inst);
-                        }
+                        if (vInfo.isValid) useDefInsts[(*bb)->idx].add(inst);
                     }
                     break;
                 }
                 case Inst::Kind::kStore: {
                     assert(inst->st.addr.kind == Opd::Kind::kReg);
-                    if (VariableIdx *vidxp = allocInstsMap[inst->st.addr.regVal]) {
+                    if (VariableIdx *vidxp = allocInstsMap[inst->st.addr.reg]) {
                         VariableInfo &vInfo = allocInsts[*vidxp];
                         if (vInfo.isValid) {
                             defSets[(*bb)->idx].set(vInfo.idx);
@@ -470,6 +614,7 @@ void pass(Opt &opt, Function &fn) {
                 }
                 default: break;
             }
+            inst = nextInst;
         }
         if (!defSets[(*bb)->idx].all_zero()) {
             blocksWithDefinition.add(*bb);
@@ -514,7 +659,9 @@ void pass(Opt &opt, Function &fn) {
                 BasicBlock *block = fn.rpo[*bidx];
 
                 Inst *phi = create_inst(Inst::Kind::kPhi);
-                phi->phi.joins.init(block->predCnt);
+                phi->phi.joins = mem::c_alloc<Opd>(block->predCnt);
+                phi->phi.incomingBBs = mem::c_alloc<BasicBlock *>(block->predCnt);
+                phi->phi.numJoins = 0;
                 push_front_inst(opt, block, phi, true);
 
                 // Map phi inst to the variable it represents
@@ -531,9 +678,7 @@ void pass(Opt &opt, Function &fn) {
         Inst **currAvailDef = &availDef[(*bb)->idx * allocInsts.size];
         Inst **domAvailDef = &availDef[fn.dom[(*bb)->idx]->idx * allocInsts.size];
         for (size_t i = 0; i < allocInsts.size; i++) {
-            if (allocInsts[i].isValid) {
-                currAvailDef[i] = domAvailDef[i];
-            }
+            if (allocInsts[i].isValid) currAvailDef[i] = domAvailDef[i];
         }
 
         // Add phi nodes as available definition for renaming
@@ -550,13 +695,13 @@ void pass(Opt &opt, Function &fn) {
                 case Inst::Kind::kLoad: {
                     assert(inst->ld.src.kind == Opd::Kind::kReg);
 
-                    VariableIdx *vidxp = allocInstsMap[inst->ld.src.regVal];
+                    VariableIdx *vidxp = allocInstsMap[inst->ld.src.reg];
                     assert(vidxp);
 
                     // Avoid renaming load into a recursive assign: "v34 = v34"
                     if (currAvailDef[*vidxp] != inst) {
-                        inst->kind = Inst::Kind::kAssign;
-                        inst->assign.src.regVal = currAvailDef[*vidxp];
+                        inst->kind = Inst::Kind::kMov;
+                        inst->mov.src.reg = currAvailDef[*vidxp];
                     }
                     break;
                 }
@@ -564,19 +709,11 @@ void pass(Opt &opt, Function &fn) {
                     assert(inst->kind == Inst::Kind::kStore);
                     assert(inst->st.addr.kind == Opd::Kind::kReg);
 
-                    VariableIdx *vidxp = allocInstsMap[inst->st.addr.regVal];
+                    VariableIdx *vidxp = allocInstsMap[inst->st.addr.reg];
                     assert(vidxp);
 
-                    inst->kind = Inst::Kind::kAssign;
-                    if (inst->st.src.kind == Opd::Kind::kReg && inst->st.src.regVal->kind == Inst::Kind::kAssign) {
-                        Inst *prev = inst->st.src.regVal;
-                        inst->assign.src = prev->assign.src;
-                        // TODO: make sure this is correct
-                        assert(prev == inst->prev);
-                        remove_inst(prev);
-                    } else {
-                        inst->assign.src = inst->st.src;
-                    }
+                    inst->kind = Inst::Kind::kMov;
+                    inst->mov.src = inst->st.src;
                     inst->dst = opt.nextReg++;
 
                     currAvailDef[*vidxp] = inst;
@@ -588,9 +725,23 @@ void pass(Opt &opt, Function &fn) {
 
         // Add join values to phi nodes in successor blocks
         for (auto succ = succ_begin(*bb); succ != succ_end(*bb); ++succ) {
-            for (Inst *phi = (*succ)->start; phi && phi->kind == Inst::Kind::kPhi; phi = phi->next) {
+            Inst *phi = (*succ)->start;
+            while (phi && phi->kind == Inst::Kind::kPhi) {
+                Inst *nextPhi = phi->next;
+
                 VariableIdx vidx = *phiVariableIdxMap[phi];
-                phi->phi.joins.add({currAvailDef[vidx], *bb});
+                Inst *avail = currAvailDef[vidx];
+                if (avail) {
+                    phi->phi.joins[phi->phi.numJoins].kind = Opd::Kind::kReg;
+                    phi->phi.joins[phi->phi.numJoins].reg = avail;
+                    phi->phi.incomingBBs[phi->phi.numJoins] = *bb;
+                    phi->phi.numJoins++;
+                } else {
+                    // If any arguments of a phi are undefined,
+                    // then the phi node can be safely removed
+                    remove_inst(phi);
+                }
+                phi = nextPhi;
             }
         }
     }
@@ -604,89 +755,22 @@ void pass(Opt &opt, Function &fn) {
     }
 
     phiVariableIdxMap.destroy();
+}
+
 }  // namespace mem_elimination
-
-}  // namespace mem_elimination
-
-#if 0
-
-namespace opt {
-
-bool is_commutative(TokenType infixOp) {
-    switch (infixOp) {
-        case TokenType::kAdd: return true;
-        default: return false;
-    }
-}
-
-bool const_prop_opd(Opd &opd) {
-    if (opd.kind == Opd::Kind::kReg) {
-        Inst *def = opd.regVal;
-        if (def->kind == Inst::Kind::kAssign) {
-            if (def->assign.src.kind == Opd::Kind::kImm) {
-                opd.kind = Opd::Kind::kImm;
-                opd.intval = def->assign.src.intval;
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-void canon_inst(Inst *inst) {
-    switch (inst->kind) {
-        case Inst::Kind::kAssign:
-            if (const_prop_opd(inst->assign.src)) {
-                annotate_inst(inst);
-            };
-            break;
-        case Inst::Kind::kBin: {
-            bool lchange = const_prop_opd(inst->bin.left);
-            bool rchange = const_prop_opd(inst->bin.right);
-            if (lchange || rchange) {
-                annotate_inst(inst);
-            }
-            if (inst->bin.left.kind == Opd::Kind::kImm && inst->bin.right.kind == Opd::Kind::kImm) {
-                inst->kind = Inst::Kind::kAssign;
-
-                switch (inst->bin.op) {
-                    case TokenType::kAdd: {
-                        inst->assign.src.kind = Opd::Kind::kImm;
-                        inst->assign.src.intval = inst->bin.left.intval + inst->bin.right.intval;
-                        break;
-                    }
-                    default: assert(!"TODO: unimplemented constant folding for infix operation");
-                }
-                annotate_inst(inst);
-            }
-            break;
-        }
-        default: break;
-    }
-}
-
-void global_canon(CFG &cfg) {
-    for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
-        for (Inst *inst = (*bb)->start; inst; inst = inst->next) {
-            canon_inst(inst);
-        }
-    }
-}
-
-}  // namespace opt
 
 // Dead Code Elimination
 namespace dce {
 
 struct DCE {
-    LPtrMap<Inst, size_t> liveMap;
+    LMap<Inst *, size_t> liveMap;
     LList<Inst *> usedInstsList;
 };
 
 void mark_opd(DCE &dce, Opd &opd) {
     if (opd.kind == Opd::Kind::kReg) {
-        if (!dce.liveMap.try_put(opd.regVal, dce.usedInstsList.size)) {
-            dce.usedInstsList.add(opd.regVal);
+        if (!dce.liveMap.try_put(opd.reg, dce.usedInstsList.size)) {
+            dce.usedInstsList.add(opd.reg);
         }
     }
 }
@@ -697,17 +781,18 @@ void mark_opd(DCE &dce, Opd &opd) {
  * definitions used by live instructions as also alive. Work backwards until convergence.
  * Final pass removes all instructions not marked as alive
  */
-void pass_mark_pessismistic(CFG &cfg) {
+void pass_mark_pessismistic(Function &fn) {
     DCE dce;
     dce.liveMap.init();
     dce.usedInstsList = {};
 
-    for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
+    for (auto bb = rpo_begin(fn), end = rpo_end(fn); bb != end; ++bb) {
         Inst *curr = (*bb)->start;
         while (curr) {
             switch (curr->kind) {
-                case Inst::Kind::kArg:
+                case Inst::Kind::kAlloc:
                 case Inst::Kind::kCall:
+                case Inst::Kind::kStore:
                     assert(!dce.liveMap.try_put(curr, dce.usedInstsList.size));
                     dce.usedInstsList.add(curr);
                     break;
@@ -719,48 +804,57 @@ void pass_mark_pessismistic(CFG &cfg) {
             mark_opd(dce, (*bb)->term.cond.predicate);
         }
     }
-    for (size_t i = 0; i < cfg.exit->term.ret.args.size; i++) {
-        mark_opd(dce, cfg.exit->term.ret.args[i].opd);
-    }
 
     for (size_t i = 0; i < dce.usedInstsList.size; i++) {
         Inst *marked = dce.usedInstsList[i];
         switch (marked->kind) {
+            case Inst::Kind::kAlloc: break;
             case Inst::Kind::kPhi:
-                for (size_t i = 0; i < marked->phi.joins.size; i++) {
-                    Inst *ref = marked->phi.joins[i].ref;
+                for (size_t i = 0; i < marked->phi.numJoins; i++) {
+                    if (marked->phi.joins[i].kind != Opd::Kind::kReg) continue;
+                    Inst *ref = marked->phi.joins[i].reg;
                     if (!dce.liveMap.try_put(ref, dce.usedInstsList.size)) {
                         dce.usedInstsList.add(ref);
                     }
                 }
                 break;
-            case Inst::Kind::kArg: break;
-            case Inst::Kind::kAssign: mark_opd(dce, marked->assign.src); break;
+            case Inst::Kind::kMov: mark_opd(dce, marked->mov.src); break;
             case Inst::Kind::kBin:
                 mark_opd(dce, marked->bin.left);
                 mark_opd(dce, marked->bin.right);
                 break;
             case Inst::Kind::kCall:
-                for (size_t i = 0; i < marked->call.args.size; i++) {
+                for (size_t i = 0; i < marked->call.numArgs; i++) {
                     mark_opd(dce, marked->call.args[i]);
                 }
                 break;
+
+                // TODO: enhanced detection here using alias analysis
             case Inst::Kind::kLoad: mark_opd(dce, marked->ld.src); break;
+            case Inst::Kind::kStore:
+                mark_opd(dce, marked->st.addr);
+                mark_opd(dce, marked->st.src);
+                break;
         }
     }
-    for (auto bb = rpo_begin(cfg), end = rpo_end(cfg); bb != end; ++bb) {
+    size_t numEliminated = 0;
+    for (auto bb = rpo_begin(fn), end = rpo_end(fn); bb != end; ++bb) {
         Inst *curr = (*bb)->start;
         while (curr) {
+            Inst *next = curr->next;
             if (!dce.liveMap[curr]) {
-                free_inst(curr);
+                numEliminated++;
+                remove_inst(curr);
             }
-            curr = curr->next;
+            curr = next;
         }
     }
+    printf("Number eliminated = %d\n", numEliminated);
 }
 
 }  // namespace dce
 
+#if 0
 namespace gvnpre {
 
 #define DBG_GVN 0
@@ -1574,6 +1668,8 @@ void optimize(Opt &opt, Function &fn) {
     // PASS(Init, (void), nullptr);
     PASS(CFGCanon, cfg_opt::canonicalize, fn);
     PASS(MemElim, mem_elimination::pass, opt, fn);
+    PASS(InstCanon, opt::global_canon, opt, fn);
+    PASS(Dce, dce::pass_mark_pessismistic, fn);
     /*
     PASS(Canon, opt::global_canon, cfg);
     PASS(GvnPre, gvnpre::pass, cfg);
